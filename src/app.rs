@@ -29,6 +29,7 @@ const DEFAULT_NEW_HEIGHT: u16 = 16;
 const COLOR_SLOT_WIDTH: u16 = 3;
 const COLOR_SWATCH_WIDTH: u16 = 2;
 const CHAR_SLOT_WIDTH: u16 = 3;
+const TOP_BUTTON_GAP: u16 = 1;
 
 #[derive(Debug, Clone, Copy)]
 struct PaletteColor {
@@ -145,10 +146,10 @@ const COLOR_PALETTE: &[PaletteColor] = &[
 ];
 
 const CHARACTER_PALETTE: &[char] = &[
-    '#', '*', '+', '-', '/', '\\', '|', '_', '.', '\'', '"', '`', '~', '^', 'o', 'O', '█', '▓',
-    '▒', '░', '▀', '▄', '▌', '▐', '■', '□', '▪', '▫', '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬',
-    '┴', '┼', '╭', '╮', '╰', '╯', '•', '◆', '◇', '▲', '▼', '◀', '▶', '★', '☆', '✦', '✧', '✶', '✷',
-    '✹', '✺',
+    '#', ' ', '*', '+', '-', '/', '\\', '|', '_', '.', '\'', '"', '`', '~', '^', 'o', 'O', '█',
+    '▓', '▒', '░', '▀', '▄', '▌', '▐', '■', '□', '▪', '▫', '─', '│', '┌', '┐', '└', '┘', '├', '┤',
+    '┬', '┴', '┼', '╭', '╮', '╰', '╯', '•', '◆', '◇', '▲', '▼', '◀', '▶', '★', '☆', '✦', '✧', '✶',
+    '✷', '✹', '✺',
 ];
 
 pub fn run_interactive(initial: Startup) -> Result<()> {
@@ -226,6 +227,58 @@ enum Tool {
     Eyedropper,
 }
 
+impl Tool {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pencil => "Pencil",
+            Self::Eraser => "Eraser",
+            Self::Eyedropper => "Eyedropper",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Pencil => "Paint selected character and style",
+            Self::Eraser => "Clear cells to transparent",
+            Self::Eyedropper => "Pick character and style from a cell",
+        }
+    }
+}
+
+const TOOL_CHOICES: &[Tool] = &[Tool::Pencil, Tool::Eraser, Tool::Eyedropper];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopAction {
+    Save,
+    SaveAs,
+    ExportText,
+    Quit,
+}
+
+impl TopAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Save => "Save",
+            Self::SaveAs => "Save As",
+            Self::ExportText => "Export",
+            Self::Quit => "Quit",
+        }
+    }
+}
+
+const TOP_ACTIONS: &[TopAction] = &[
+    TopAction::Save,
+    TopAction::SaveAs,
+    TopAction::ExportText,
+    TopAction::Quit,
+];
+
+#[derive(Debug, Clone, Copy)]
+struct ButtonHit<T> {
+    action: T,
+    area: Rect,
+}
+
 #[derive(Debug, Clone)]
 enum Modal {
     NewImage {
@@ -256,6 +309,7 @@ enum Modal {
     ExportText {
         input: String,
     },
+    ToolMenu,
     QuitConfirm,
 }
 
@@ -285,9 +339,19 @@ struct AppState {
     brush_char: char,
     current_style: usize,
     canvas_area: Rect,
+    tool_button_area: Rect,
+    brush_button_area: Rect,
     color_palette_area: Rect,
     character_palette_area: Rect,
+    top_action_areas: Vec<ButtonHit<TopAction>>,
+    modal_tool_areas: Vec<ButtonHit<Tool>>,
+    modal_area: Rect,
     hovered_palette: Option<PaletteHover>,
+    hovered_top_action: Option<TopAction>,
+    hovered_tool_button: bool,
+    hovered_brush_button: bool,
+    hovered_modal_tool: Option<Tool>,
+    hovered_canvas_cell: Option<(u16, u16)>,
     undo_stack: Vec<Stroke>,
     redo_stack: Vec<Stroke>,
     active_stroke: Option<Stroke>,
@@ -350,9 +414,19 @@ impl AppState {
             brush_char: '#',
             current_style: 0,
             canvas_area: Rect::default(),
+            tool_button_area: Rect::default(),
+            brush_button_area: Rect::default(),
             color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            top_action_areas: Vec::new(),
+            modal_tool_areas: Vec::new(),
+            modal_area: Rect::default(),
             hovered_palette: None,
+            hovered_top_action: None,
+            hovered_tool_button: false,
+            hovered_brush_button: false,
+            hovered_modal_tool: None,
+            hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -377,9 +451,19 @@ impl AppState {
             brush_char: '#',
             current_style: 0,
             canvas_area: Rect::default(),
+            tool_button_area: Rect::default(),
+            brush_button_area: Rect::default(),
             color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            top_action_areas: Vec::new(),
+            modal_tool_areas: Vec::new(),
+            modal_area: Rect::default(),
             hovered_palette: None,
+            hovered_top_action: None,
+            hovered_tool_button: false,
+            hovered_brush_button: false,
+            hovered_modal_tool: None,
+            hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -452,16 +536,13 @@ impl AppState {
 
         match key.code {
             KeyCode::Char('p') | KeyCode::Char('P') => {
-                self.tool = Tool::Pencil;
-                self.message = "Pencil selected".to_string();
+                self.select_tool(Tool::Pencil);
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
-                self.tool = Tool::Eraser;
-                self.message = "Eraser selected".to_string();
+                self.select_tool(Tool::Eraser);
             }
             KeyCode::Char('i') | KeyCode::Char('I') => {
-                self.tool = Tool::Eyedropper;
-                self.message = "Eyedropper selected".to_string();
+                self.select_tool(Tool::Eyedropper);
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.modal = Some(Modal::BrushChar {
@@ -489,14 +570,7 @@ impl AppState {
                 self.modal = Some(Modal::SetBg { input: bg });
             }
             KeyCode::Char('t') | KeyCode::Char('T') => {
-                let default = self
-                    .file_path
-                    .as_ref()
-                    .map(|path| default_text_export_path(path.as_path()))
-                    .unwrap_or_else(|| PathBuf::from("terminal-art.txt"));
-                self.modal = Some(Modal::ExportText {
-                    input: default.display().to_string(),
-                });
+                self.open_export_text();
             }
             KeyCode::Char('[') => self.previous_style(),
             KeyCode::Char(']') | KeyCode::Tab => self.next_style(),
@@ -507,6 +581,26 @@ impl AppState {
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) {
+        if matches!(self.modal, Some(Modal::ToolMenu)) {
+            match key.code {
+                KeyCode::Esc => {
+                    self.modal = None;
+                    self.message = "Tool menu closed".to_string();
+                }
+                KeyCode::Char('1') | KeyCode::Char('p') | KeyCode::Char('P') => {
+                    self.select_tool_from_menu(Tool::Pencil);
+                }
+                KeyCode::Char('2') | KeyCode::Char('e') | KeyCode::Char('E') => {
+                    self.select_tool_from_menu(Tool::Eraser);
+                }
+                KeyCode::Char('3') | KeyCode::Char('i') | KeyCode::Char('I') => {
+                    self.select_tool_from_menu(Tool::Eyedropper);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.modal, Some(Modal::QuitConfirm)) {
             match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -709,20 +803,41 @@ impl AppState {
                     Err(error) => self.message = format!("Export failed: {error}"),
                 }
             }
+            Modal::ToolMenu => {}
             Modal::QuitConfirm => {}
         }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.screen != Screen::Editor || self.modal.is_some() {
+        if self.screen != Screen::Editor {
             return;
         }
 
-        self.update_palette_hover(mouse.column, mouse.row);
+        if self.modal.is_some() {
+            self.handle_modal_mouse(mouse);
+            return;
+        }
+
+        self.update_hover(mouse.column, mouse.row);
 
         match mouse.kind {
             MouseEventKind::Moved => {}
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.apply_top_action_click(mouse.column, mouse.row) {
+                    return;
+                }
+                if rect_contains(self.tool_button_area, mouse.column, mouse.row) {
+                    self.modal = Some(Modal::ToolMenu);
+                    self.hovered_modal_tool = None;
+                    self.message = "Choose a tool".to_string();
+                    return;
+                }
+                if rect_contains(self.brush_button_area, mouse.column, mouse.row) {
+                    self.modal = Some(Modal::BrushChar {
+                        input: self.brush_char.to_string(),
+                    });
+                    return;
+                }
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
                 }
@@ -740,7 +855,36 @@ impl AppState {
         }
     }
 
-    fn update_palette_hover(&mut self, column: u16, row: u16) {
+    fn handle_modal_mouse(&mut self, mouse: MouseEvent) {
+        if !matches!(self.modal, Some(Modal::ToolMenu)) {
+            return;
+        }
+
+        self.hovered_modal_tool = self.modal_tool_at(mouse.column, mouse.row);
+
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if let Some(tool) = self.hovered_modal_tool {
+                self.select_tool_from_menu(tool);
+            } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                self.modal = None;
+                self.message = "Tool menu closed".to_string();
+            }
+        }
+    }
+
+    fn update_hover(&mut self, column: u16, row: u16) {
+        self.hovered_top_action = self.top_action_at(column, row);
+        self.hovered_tool_button = rect_contains(self.tool_button_area, column, row);
+        self.hovered_brush_button = rect_contains(self.brush_button_area, column, row);
+        self.hovered_canvas_cell = if self.hovered_top_action.is_none()
+            && !self.hovered_tool_button
+            && !self.hovered_brush_button
+        {
+            self.canvas_cell_at(column, row).map(|(x, y)| (y, x))
+        } else {
+            None
+        };
+
         self.hovered_palette = if let Some(index) = hit_palette_item(
             self.color_palette_area,
             COLOR_SLOT_WIDTH,
@@ -759,6 +903,29 @@ impl AppState {
             )
             .map(PaletteHover::Character)
         };
+    }
+
+    fn top_action_at(&self, column: u16, row: u16) -> Option<TopAction> {
+        self.top_action_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn modal_tool_at(&self, column: u16, row: u16) -> Option<Tool> {
+        self.modal_tool_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn apply_top_action_click(&mut self, column: u16, row: u16) -> bool {
+        if let Some(action) = self.top_action_at(column, row) {
+            self.run_top_action(action);
+            true
+        } else {
+            false
+        }
     }
 
     fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
@@ -948,6 +1115,37 @@ impl AppState {
         self.message = "Redo".to_string();
     }
 
+    fn select_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.message = format!("{} selected", tool.label());
+    }
+
+    fn select_tool_from_menu(&mut self, tool: Tool) {
+        self.modal = None;
+        self.hovered_modal_tool = None;
+        self.select_tool(tool);
+    }
+
+    fn run_top_action(&mut self, action: TopAction) {
+        match action {
+            TopAction::Save => self.save(),
+            TopAction::SaveAs => self.open_save_as(),
+            TopAction::ExportText => self.open_export_text(),
+            TopAction::Quit => self.request_quit(),
+        }
+    }
+
+    fn open_export_text(&mut self) {
+        let default = self
+            .file_path
+            .as_ref()
+            .map(|path| default_text_export_path(path.as_path()))
+            .unwrap_or_else(|| PathBuf::from("terminal-art.txt"));
+        self.modal = Some(Modal::ExportText {
+            input: default.display().to_string(),
+        });
+    }
+
     fn save(&mut self) {
         let Some(path) = self.file_path.clone() else {
             self.open_save_as();
@@ -1078,7 +1276,7 @@ fn draw_editor(frame: &mut Frame<'_>, app: &mut AppState) {
     draw_footer(frame, app, root[2]);
 }
 
-fn draw_top_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let dirty = if app.dirty { " *" } else { "" };
     let path = app
         .file_path
@@ -1093,19 +1291,54 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
         app.project.asset.height,
         app.project.first_frame().cells.len()
     );
-    frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL)),
-        area,
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.top_action_areas.clear();
+
+    let mut x = inner.x + inner.width;
+    let mut buttons = Vec::new();
+    for action in TOP_ACTIONS.iter().rev() {
+        let label = format!("[{}]", action.label());
+        let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
+        if width + TOP_BUTTON_GAP > x.saturating_sub(inner.x) {
+            continue;
+        }
+        x = x.saturating_sub(width);
+        let area = Rect {
+            x,
+            y: inner.y,
+            width,
+            height: 1,
+        };
+        buttons.push((*action, label, area));
+        x = x.saturating_sub(TOP_BUTTON_GAP);
+    }
+
+    let text_width = x.saturating_sub(inner.x).saturating_sub(TOP_BUTTON_GAP);
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        text_width,
+        &text,
+        TuiStyle::default(),
     );
+
+    for (action, label, area) in buttons {
+        let style = if app.hovered_top_action == Some(action) {
+            hover_style()
+        } else {
+            TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194))
+        };
+        draw_text(frame, area.x, area.y, area.width, &label, style);
+        app.top_action_areas.push(ButtonHit { action, area });
+    }
 }
 
 fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
-    let style = &app.project.styles[app.current_style];
-    let tool = match app.tool {
-        Tool::Pencil => "Pencil",
-        Tool::Eraser => "Eraser",
-        Tool::Eyedropper => "Eyedropper",
-    };
+    let style = app.project.styles[app.current_style].clone();
+    let tool = app.tool.label();
 
     let bg = style
         .bg
@@ -1126,6 +1359,8 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    app.tool_button_area = Rect::default();
+    app.brush_button_area = Rect::default();
     app.color_palette_area = Rect::default();
     app.character_palette_area = Rect::default();
 
@@ -1134,14 +1369,21 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let normal = TuiStyle::default();
     let strong = TuiStyle::default().add_modifier(Modifier::BOLD);
 
-    draw_sidebar_line(frame, inner, &mut y, max_y, format!("Tool: {tool}"), strong);
-    draw_sidebar_line(
+    app.tool_button_area = draw_sidebar_control_line(
         frame,
         inner,
         &mut y,
         max_y,
-        format!("Brush: {:?}", app.brush_char),
-        normal,
+        format!("Tool: {tool} ▾"),
+        app.hovered_tool_button,
+    );
+    app.brush_button_area = draw_sidebar_control_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        format!("Brush: {}", brush_label(app.brush_char)),
+        app.hovered_brush_button,
     );
     draw_sidebar_line(
         frame,
@@ -1261,6 +1503,43 @@ fn draw_sidebar_line(
     *y = y.saturating_add(1);
 }
 
+fn draw_sidebar_control_line(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    y: &mut u16,
+    max_y: u16,
+    text: String,
+    hovered: bool,
+) -> Rect {
+    if *y >= max_y {
+        return Rect::default();
+    }
+
+    let line_area = Rect {
+        x: area.x,
+        y: *y,
+        width: area.width,
+        height: 1,
+    };
+    let style = if hovered {
+        hover_style()
+    } else {
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228))
+    };
+    fill_rect(frame, line_area, style);
+    draw_text(
+        frame,
+        line_area.x,
+        line_area.y,
+        line_area.width,
+        &text,
+        style,
+    );
+    *y = y.saturating_add(1);
+
+    line_area
+}
+
 fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
     if *y < max_y {
         *y = y.saturating_add(1);
@@ -1350,30 +1629,13 @@ fn draw_character_palette(
 
         let selected = *ch == selected_char;
         let hovered = hovered_index == Some(index);
-        let style = if selected && hovered {
-            TuiStyle::default()
-                .fg(TuiColor::Rgb(35, 32, 52))
-                .bg(TuiColor::Rgb(198, 160, 246))
-                .add_modifier(Modifier::BOLD)
-        } else if selected {
-            TuiStyle::default()
-                .fg(TuiColor::Rgb(34, 39, 46))
-                .bg(TuiColor::Rgb(245, 190, 82))
-                .add_modifier(Modifier::BOLD)
-        } else if hovered {
-            TuiStyle::default()
-                .fg(TuiColor::Rgb(20, 45, 50))
-                .bg(TuiColor::Rgb(79, 209, 197))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194))
-        };
+        let style = choice_style(selected, hovered);
 
         frame.buffer_mut()[(x, y)].set_symbol(" ").set_style(style);
 
         if x + 1 < area.x + area.width {
             frame.buffer_mut()[(x + 1, y)]
-                .set_symbol(&ch.to_string())
+                .set_symbol(&palette_char_symbol(*ch))
                 .set_style(style);
         }
 
@@ -1437,6 +1699,64 @@ fn hit_palette_item(
     (index < item_count).then_some(index)
 }
 
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    area.width > 0
+        && area.height > 0
+        && column >= area.x
+        && row >= area.y
+        && column < area.x + area.width
+        && row < area.y + area.height
+}
+
+fn fill_rect(frame: &mut Frame<'_>, area: Rect, style: TuiStyle) {
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            frame.buffer_mut()[(x, y)].set_symbol(" ").set_style(style);
+        }
+    }
+}
+
+fn hover_style() -> TuiStyle {
+    TuiStyle::default()
+        .fg(TuiColor::Rgb(20, 45, 50))
+        .bg(TuiColor::Rgb(79, 209, 197))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn choice_style(selected: bool, hovered: bool) -> TuiStyle {
+    if selected && hovered {
+        TuiStyle::default()
+            .fg(TuiColor::Rgb(35, 32, 52))
+            .bg(TuiColor::Rgb(198, 160, 246))
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
+        TuiStyle::default()
+            .fg(TuiColor::Rgb(34, 39, 46))
+            .bg(TuiColor::Rgb(245, 190, 82))
+            .add_modifier(Modifier::BOLD)
+    } else if hovered {
+        hover_style()
+    } else {
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194))
+    }
+}
+
+fn brush_label(ch: char) -> String {
+    if ch == ' ' {
+        "space".to_string()
+    } else {
+        format!("{ch:?}")
+    }
+}
+
+fn palette_char_symbol(ch: char) -> String {
+    if ch == ' ' {
+        "·".to_string()
+    } else {
+        ch.to_string()
+    }
+}
+
 fn draw_text(frame: &mut Frame<'_>, x: u16, y: u16, width: u16, text: &str, style: TuiStyle) {
     for (offset, ch) in text.chars().take(usize::from(width)).enumerate() {
         let cell_x = x + u16::try_from(offset).unwrap_or(u16::MAX);
@@ -1460,15 +1780,26 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             let screen_x = inner.x + x;
             let screen_y = inner.y + y;
             let buffer_cell = &mut frame.buffer_mut()[(screen_x, screen_y)];
+            let hovered = app.hovered_canvas_cell == Some((y, x));
 
             if let Some(cell) = app.project.first_frame().cells.get(&(y, x)) {
-                let style = style_to_tui(&app.project.styles[cell.style_index]);
+                let mut style = style_to_tui(&app.project.styles[cell.style_index]);
+                if hovered {
+                    style = style.bg(TuiColor::Rgb(33, 77, 85));
+                }
                 let symbol = cell.ch.to_string();
                 buffer_cell.set_symbol(&symbol);
                 buffer_cell.set_style(style);
             } else {
+                let style = if hovered {
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(79, 209, 197))
+                        .bg(TuiColor::Rgb(24, 52, 58))
+                } else {
+                    TuiStyle::default().fg(TuiColor::DarkGray)
+                };
                 buffer_cell.set_symbol(".");
-                buffer_cell.set_style(TuiStyle::default().fg(TuiColor::DarkGray));
+                buffer_cell.set_style(style);
             }
         }
     }
@@ -1488,8 +1819,12 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help = "Click palettes | Ctrl-S save | Ctrl-Z/Y undo/redo | T export text | Q quit";
-    let lines = vec![Line::from(help), Line::from(app.message.as_str())];
+    let help = "Click Tool for menu | Click top actions | Click palettes | Ctrl-Z/Y undo/redo";
+    let lines = vec![
+        Line::from(help),
+        Line::from(app.message.as_str()),
+        Line::from(canvas_status(app)),
+    ];
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().title("Status").borders(Borders::ALL))
@@ -1498,12 +1833,44 @@ fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     );
 }
 
-fn draw_modal(frame: &mut Frame<'_>, app: &AppState) {
-    let Some(modal) = app.modal.as_ref() else {
+fn canvas_status(app: &AppState) -> String {
+    let Some((y, x)) = app.hovered_canvas_cell else {
+        return format!(
+            "Brush {} with {} | {}",
+            brush_label(app.brush_char),
+            app.project.styles[app.current_style].id,
+            app.tool.description()
+        );
+    };
+
+    if let Some(cell) = app.project.first_frame().cells.get(&(y, x)) {
+        let style = &app.project.styles[cell.style_index];
+        format!(
+            "Cell {},{}: {} using {}",
+            x,
+            y,
+            brush_label(cell.ch),
+            style.id
+        )
+    } else {
+        format!("Cell {x},{y}: transparent")
+    }
+}
+
+fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
+    let Some(modal) = app.modal.clone() else {
         return;
     };
 
+    app.modal_tool_areas.clear();
+
+    if matches!(modal, Modal::ToolMenu) {
+        draw_tool_menu(frame, app);
+        return;
+    }
+
     let area = centered_rect(72, 7, frame.area());
+    app.modal_area = area;
     frame.render_widget(Clear, area);
 
     let (title, body) = match modal {
@@ -1516,6 +1883,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &AppState) {
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
+        Modal::ToolMenu => unreachable!("tool menu is drawn separately"),
         Modal::QuitConfirm => (
             "Unsaved Changes",
             "S save and quit, D discard, C cancel".to_string(),
@@ -1530,6 +1898,62 @@ fn draw_modal(frame: &mut Frame<'_>, app: &AppState) {
     .block(Block::default().title(title).borders(Borders::ALL))
     .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
+    let area = centered_rect(62, 10, frame.area());
+    app.modal_area = area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default().title("Choose Tool").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        inner.width,
+        "Click a row or press P, E, I",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let mut y = inner.y.saturating_add(2);
+    for (index, tool) in TOOL_CHOICES.iter().enumerate() {
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        let row = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        };
+        let selected = app.tool == *tool;
+        let hovered = app.hovered_modal_tool == Some(*tool);
+        let style = choice_style(selected, hovered);
+        fill_rect(frame, row, style);
+
+        let shortcut = match tool {
+            Tool::Pencil => "P",
+            Tool::Eraser => "E",
+            Tool::Eyedropper => "I",
+        };
+        let label = format!(
+            "{}  {}  {:<10} {}",
+            index + 1,
+            shortcut,
+            tool.label(),
+            tool.description()
+        );
+        draw_text(frame, row.x, row.y, row.width, &label, style);
+        app.modal_tool_areas.push(ButtonHit {
+            action: *tool,
+            area: row,
+        });
+        y = y.saturating_add(1);
+    }
 }
 
 fn style_to_tui(style: &TerminalStyle) -> TuiStyle {
@@ -1563,7 +1987,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::SetFg { input }
         | Modal::SetBg { input }
         | Modal::ExportText { input } => Some(input),
-        Modal::QuitConfirm => None,
+        Modal::ToolMenu | Modal::QuitConfirm => None,
     }
 }
 
@@ -1743,13 +2167,60 @@ mod tests {
             height: 2,
         };
 
-        app.update_palette_hover(4, 1);
+        app.update_hover(4, 1);
         assert_eq!(app.hovered_palette, Some(PaletteHover::Color(1)));
 
-        app.update_palette_hover(7, 5);
+        app.update_hover(7, 5);
         assert_eq!(app.hovered_palette, Some(PaletteHover::Character(2)));
 
-        app.update_palette_hover(30, 30);
+        app.update_hover(30, 30);
         assert_eq!(app.hovered_palette, None);
+    }
+
+    #[test]
+    fn hover_tracks_toolbar_controls_and_canvas_cells() {
+        let mut app = AppState::editor(Project::new_image("hover", 4, 2), None, false, "");
+        app.top_action_areas.push(ButtonHit {
+            action: TopAction::Save,
+            area: Rect {
+                x: 1,
+                y: 1,
+                width: 6,
+                height: 1,
+            },
+        });
+        app.tool_button_area = Rect {
+            x: 1,
+            y: 3,
+            width: 10,
+            height: 1,
+        };
+        app.canvas_area = Rect {
+            x: 20,
+            y: 5,
+            width: 4,
+            height: 2,
+        };
+
+        app.update_hover(2, 1);
+        assert_eq!(app.hovered_top_action, Some(TopAction::Save));
+
+        app.update_hover(3, 3);
+        assert!(app.hovered_tool_button);
+
+        app.update_hover(22, 6);
+        assert_eq!(app.hovered_canvas_cell, Some((1, 2)));
+    }
+
+    #[test]
+    fn tool_menu_selection_updates_tool_and_closes_modal() {
+        let mut app = AppState::editor(Project::new_image("tool", 4, 2), None, false, "");
+        app.modal = Some(Modal::ToolMenu);
+
+        app.select_tool_from_menu(Tool::Eraser);
+
+        assert_eq!(app.tool, Tool::Eraser);
+        assert!(app.modal.is_none());
+        assert_eq!(app.message, "Eraser selected");
     }
 }
