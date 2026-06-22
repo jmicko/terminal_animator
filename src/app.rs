@@ -1,7 +1,7 @@
 use crate::format::{
-    Color, FormatError, MAX_AREA_PER_FRAME, MAX_HEIGHT, MAX_WIDTH, PaintedCell, Project,
-    TerminalStyle, TextAttr, export_plain_text, is_valid_v1_character, load_project_from_path,
-    save_project_to_path,
+    Color, FormatError, MAX_AREA_PER_FRAME, MAX_HEIGHT, MAX_STYLES, MAX_WIDTH, PaintedCell,
+    Project, TerminalStyle, TextAttr, export_plain_text, is_valid_v1_character,
+    load_project_from_path, save_project_to_path,
 };
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{
@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color as TuiColor, Modifier, Style as TuiStyle};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeMap;
@@ -26,6 +26,130 @@ use std::time::Duration;
 
 const DEFAULT_NEW_WIDTH: u16 = 48;
 const DEFAULT_NEW_HEIGHT: u16 = 16;
+const COLOR_SLOT_WIDTH: u16 = 3;
+const COLOR_SWATCH_WIDTH: u16 = 2;
+const CHAR_SLOT_WIDTH: u16 = 2;
+
+#[derive(Debug, Clone, Copy)]
+struct PaletteColor {
+    name: &'static str,
+    id_base: &'static str,
+    color: Color,
+}
+
+const COLOR_PALETTE: &[PaletteColor] = &[
+    PaletteColor {
+        name: "black",
+        id_base: "palette-black",
+        color: Color { r: 0, g: 0, b: 0 },
+    },
+    PaletteColor {
+        name: "white",
+        id_base: "palette-white",
+        color: Color {
+            r: 238,
+            g: 238,
+            b: 238,
+        },
+    },
+    PaletteColor {
+        name: "gray",
+        id_base: "palette-gray",
+        color: Color {
+            r: 128,
+            g: 128,
+            b: 128,
+        },
+    },
+    PaletteColor {
+        name: "red",
+        id_base: "palette-red",
+        color: Color {
+            r: 224,
+            g: 73,
+            b: 73,
+        },
+    },
+    PaletteColor {
+        name: "orange",
+        id_base: "palette-orange",
+        color: Color {
+            r: 255,
+            g: 157,
+            b: 46,
+        },
+    },
+    PaletteColor {
+        name: "yellow",
+        id_base: "palette-yellow",
+        color: Color {
+            r: 224,
+            g: 185,
+            b: 82,
+        },
+    },
+    PaletteColor {
+        name: "green",
+        id_base: "palette-green",
+        color: Color {
+            r: 87,
+            g: 166,
+            b: 74,
+        },
+    },
+    PaletteColor {
+        name: "mint",
+        id_base: "palette-mint",
+        color: Color {
+            r: 91,
+            g: 194,
+            b: 150,
+        },
+    },
+    PaletteColor {
+        name: "cyan",
+        id_base: "palette-cyan",
+        color: Color {
+            r: 63,
+            g: 169,
+            b: 191,
+        },
+    },
+    PaletteColor {
+        name: "blue",
+        id_base: "palette-blue",
+        color: Color {
+            r: 82,
+            g: 128,
+            b: 214,
+        },
+    },
+    PaletteColor {
+        name: "purple",
+        id_base: "palette-purple",
+        color: Color {
+            r: 150,
+            g: 104,
+            b: 204,
+        },
+    },
+    PaletteColor {
+        name: "pink",
+        id_base: "palette-pink",
+        color: Color {
+            r: 218,
+            g: 101,
+            b: 157,
+        },
+    },
+];
+
+const CHARACTER_PALETTE: &[char] = &[
+    '#', '*', '+', '-', '/', '\\', '|', '_', '.', '\'', '"', '`', '~', '^', 'o', 'O', '█', '▓',
+    '▒', '░', '▀', '▄', '▌', '▐', '■', '□', '▪', '▫', '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬',
+    '┴', '┼', '╭', '╮', '╰', '╯', '•', '◆', '◇', '▲', '▼', '◀', '▶', '★', '☆', '✦', '✧', '✶', '✷',
+    '✹', '✺',
+];
 
 pub fn run_interactive(initial: Startup) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -155,6 +279,8 @@ struct AppState {
     brush_char: char,
     current_style: usize,
     canvas_area: Rect,
+    color_palette_area: Rect,
+    character_palette_area: Rect,
     undo_stack: Vec<Stroke>,
     redo_stack: Vec<Stroke>,
     active_stroke: Option<Stroke>,
@@ -217,6 +343,8 @@ impl AppState {
             brush_char: '#',
             current_style: 0,
             canvas_area: Rect::default(),
+            color_palette_area: Rect::default(),
+            character_palette_area: Rect::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -241,6 +369,8 @@ impl AppState {
             brush_char: '#',
             current_style: 0,
             canvas_area: Rect::default(),
+            color_palette_area: Rect::default(),
+            character_palette_area: Rect::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -581,6 +711,9 @@ impl AppState {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.apply_palette_click(mouse.column, mouse.row) {
+                    return;
+                }
                 self.active_stroke = Some(Stroke::default());
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
@@ -593,6 +726,72 @@ impl AppState {
             MouseEventKind::Up(MouseButton::Left) => self.finish_stroke(),
             _ => {}
         }
+    }
+
+    fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
+        if let Some(index) = hit_palette_item(
+            self.color_palette_area,
+            COLOR_SLOT_WIDTH,
+            column,
+            row,
+            COLOR_PALETTE.len(),
+        ) {
+            let palette_color = COLOR_PALETTE[index];
+            self.select_palette_color(palette_color);
+            return true;
+        }
+
+        if let Some(index) = hit_palette_item(
+            self.character_palette_area,
+            CHAR_SLOT_WIDTH,
+            column,
+            row,
+            CHARACTER_PALETTE.len(),
+        ) {
+            self.brush_char = CHARACTER_PALETTE[index];
+            self.tool = Tool::Pencil;
+            self.message = format!("Brush character set to {:?}", self.brush_char);
+            return true;
+        }
+
+        false
+    }
+
+    fn select_palette_color(&mut self, palette_color: PaletteColor) {
+        self.tool = Tool::Pencil;
+
+        if let Some(index) = self.project.styles.iter().position(|style| {
+            style.fg == palette_color.color && style.bg.is_none() && style.attrs.is_empty()
+        }) {
+            self.current_style = index;
+            self.message = format!(
+                "Selected {} ({})",
+                palette_color.name,
+                palette_color.color.to_hex()
+            );
+            return;
+        }
+
+        if self.project.styles.len() >= MAX_STYLES {
+            self.message = format!("Cannot add {}: style limit reached", palette_color.name);
+            return;
+        }
+
+        let id = unique_style_id(&self.project, palette_color.id_base);
+        self.project.styles.push(TerminalStyle {
+            id,
+            fg: palette_color.color,
+            bg: None,
+            attrs: Vec::new(),
+            role: Some("palette".to_string()),
+        });
+        self.current_style = self.project.styles.len() - 1;
+        self.dirty = true;
+        self.message = format!(
+            "Selected {} ({})",
+            palette_color.name,
+            palette_color.color.to_hex()
+        );
     }
 
     fn apply_tool_at_screen(&mut self, column: u16, row: u16) {
@@ -867,7 +1066,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     );
 }
 
-fn draw_sidebar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
+fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let style = &app.project.styles[app.current_style];
     let tool = match app.tool {
         Tool::Pencil => "Pencil",
@@ -890,35 +1089,272 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
             .join(", ")
     };
 
-    let lines = vec![
-        Line::from(vec![
-            Span::raw("Tool: "),
-            Span::styled(tool, TuiStyle::default().add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(format!("Brush: {:?}", app.brush_char)),
-        Line::from(""),
-        Line::from(format!(
-            "Style {}/{}",
-            app.current_style + 1,
-            app.project.styles.len()
-        )),
-        Line::from(format!("ID: {}", style.id)),
-        Line::from(format!("FG: {}", style.fg.to_hex())),
-        Line::from(format!("BG: {bg}")),
-        Line::from(format!("Attrs: {attrs}")),
-        Line::from(""),
-        Line::from("P/E/I tool"),
-        Line::from("C char"),
-        Line::from("[ ] style"),
-        Line::from("A new style"),
-        Line::from("R rename"),
-        Line::from("F/G colors"),
-    ];
+    let block = Block::default().title("Tools").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().title("Tools").borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    app.color_palette_area = Rect::default();
+    app.character_palette_area = Rect::default();
+
+    let mut y = inner.y;
+    let max_y = inner.y.saturating_add(inner.height);
+    let normal = TuiStyle::default();
+    let strong = TuiStyle::default().add_modifier(Modifier::BOLD);
+
+    draw_sidebar_line(frame, inner, &mut y, max_y, format!("Tool: {tool}"), strong);
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        format!("Brush: {:?}", app.brush_char),
+        normal,
+    );
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        format!(
+            "Style {}/{}: {}",
+            app.current_style + 1,
+            app.project.styles.len(),
+            style.id
+        ),
+        normal,
+    );
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        format!("FG: {}", style.fg.to_hex()),
+        TuiStyle::default().fg(TuiColor::Rgb(style.fg.r, style.fg.g, style.fg.b)),
+    );
+    draw_sidebar_line(frame, inner, &mut y, max_y, format!("BG: {bg}"), normal);
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        format!("Attrs: {attrs}"),
+        normal,
+    );
+    draw_sidebar_spacer(&mut y, max_y);
+
+    draw_sidebar_line(frame, inner, &mut y, max_y, "Colors".to_string(), strong);
+    if y < max_y {
+        let color_columns = palette_columns(inner.width, COLOR_SLOT_WIDTH);
+        let color_rows = palette_rows(COLOR_PALETTE.len(), color_columns);
+        let color_height = color_rows.min(max_y - y);
+        app.color_palette_area = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: color_height,
+        };
+        draw_color_palette(frame, app.color_palette_area, style.fg);
+        y = y.saturating_add(color_height);
+    }
+
+    draw_sidebar_spacer(&mut y, max_y);
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "Characters".to_string(),
+        strong,
+    );
+    if y < max_y {
+        let character_columns = palette_columns(inner.width, CHAR_SLOT_WIDTH);
+        let character_rows = palette_rows(CHARACTER_PALETTE.len(), character_columns);
+        let character_height = character_rows.min(max_y - y);
+        app.character_palette_area = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: character_height,
+        };
+        draw_character_palette(frame, app.character_palette_area, app.brush_char);
+        y = y.saturating_add(character_height);
+    }
+
+    draw_sidebar_spacer(&mut y, max_y);
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "Click swatches/symbols".to_string(),
+        normal,
+    );
+    draw_sidebar_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "F/G edit current style".to_string(),
+        normal,
+    );
+}
+
+fn draw_sidebar_line(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    y: &mut u16,
+    max_y: u16,
+    text: String,
+    style: TuiStyle,
+) {
+    if *y >= max_y {
+        return;
+    }
+
+    draw_text(frame, area.x, *y, area.width, &text, style);
+    *y = y.saturating_add(1);
+}
+
+fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
+    if *y < max_y {
+        *y = y.saturating_add(1);
+    }
+}
+
+fn draw_color_palette(frame: &mut Frame<'_>, area: Rect, selected_color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let columns = palette_columns(area.width, COLOR_SLOT_WIDTH);
+
+    for (index, palette_color) in COLOR_PALETTE.iter().enumerate() {
+        let Some((x, y)) = palette_position(area, columns, COLOR_SLOT_WIDTH, index) else {
+            break;
+        };
+
+        let style = TuiStyle::default().bg(TuiColor::Rgb(
+            palette_color.color.r,
+            palette_color.color.g,
+            palette_color.color.b,
+        ));
+
+        for offset in 0..COLOR_SWATCH_WIDTH.min(area.width.saturating_sub(x - area.x)) {
+            frame.buffer_mut()[(x + offset, y)]
+                .set_symbol(" ")
+                .set_style(style);
+        }
+
+        let marker_x = x + COLOR_SWATCH_WIDTH;
+        if marker_x < area.x + area.width {
+            let marker = if palette_color.color == selected_color {
+                "*"
+            } else {
+                " "
+            };
+            frame.buffer_mut()[(marker_x, y)]
+                .set_symbol(marker)
+                .set_style(TuiStyle::default().fg(TuiColor::Rgb(
+                    palette_color.color.r,
+                    palette_color.color.g,
+                    palette_color.color.b,
+                )));
+        }
+    }
+}
+
+fn draw_character_palette(frame: &mut Frame<'_>, area: Rect, selected_char: char) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let columns = palette_columns(area.width, CHAR_SLOT_WIDTH);
+
+    for (index, ch) in CHARACTER_PALETTE.iter().enumerate() {
+        let Some((x, y)) = palette_position(area, columns, CHAR_SLOT_WIDTH, index) else {
+            break;
+        };
+
+        let style = if *ch == selected_char {
+            TuiStyle::default()
+                .fg(TuiColor::Black)
+                .bg(TuiColor::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            TuiStyle::default().fg(TuiColor::White)
+        };
+
+        frame.buffer_mut()[(x, y)]
+            .set_symbol(&ch.to_string())
+            .set_style(style);
+
+        if x + 1 < area.x + area.width {
+            frame.buffer_mut()[(x + 1, y)]
+                .set_symbol(" ")
+                .set_style(style);
+        }
+    }
+}
+
+fn palette_columns(width: u16, slot_width: u16) -> u16 {
+    (width / slot_width).max(1)
+}
+
+fn palette_rows(item_count: usize, columns: u16) -> u16 {
+    let columns = usize::from(columns.max(1));
+    let rows = item_count.div_ceil(columns);
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
+
+fn palette_position(area: Rect, columns: u16, slot_width: u16, index: usize) -> Option<(u16, u16)> {
+    let columns = usize::from(columns.max(1));
+    let row = index / columns;
+    let column = index % columns;
+    let x = area
+        .x
+        .checked_add(u16::try_from(column).ok()?.saturating_mul(slot_width))?;
+    let y = area.y.checked_add(u16::try_from(row).ok()?)?;
+
+    if x < area.x + area.width && y < area.y + area.height {
+        Some((x, y))
+    } else {
+        None
+    }
+}
+
+fn hit_palette_item(
+    area: Rect,
+    slot_width: u16,
+    column: u16,
+    row: u16,
+    item_count: usize,
+) -> Option<usize> {
+    if area.width == 0
+        || area.height == 0
+        || column < area.x
+        || row < area.y
+        || column >= area.x + area.width
+        || row >= area.y + area.height
+    {
+        return None;
+    }
+
+    let columns = palette_columns(area.width, slot_width);
+    let local_x = column - area.x;
+    let local_y = row - area.y;
+    let item_column = local_x / slot_width;
+    let index = usize::from(local_y) * usize::from(columns) + usize::from(item_column);
+
+    (index < item_count).then_some(index)
+}
+
+fn draw_text(frame: &mut Frame<'_>, x: u16, y: u16, width: u16, text: &str, style: TuiStyle) {
+    for (offset, ch) in text.chars().take(usize::from(width)).enumerate() {
+        let cell_x = x + u16::try_from(offset).unwrap_or(u16::MAX);
+        frame.buffer_mut()[(cell_x, y)]
+            .set_symbol(&ch.to_string())
+            .set_style(style);
+    }
 }
 
 fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
@@ -963,7 +1399,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help = "Ctrl-S save | Ctrl-Shift-S save as | Ctrl-Z/Y undo/redo | T export text | Q quit";
+    let help = "Click palettes | Ctrl-S save | Ctrl-Z/Y undo/redo | T export text | Q quit";
     let lines = vec![Line::from(help), Line::from(app.message.as_str())];
     frame.render_widget(
         Paragraph::new(lines)
@@ -1121,6 +1557,21 @@ fn next_style_id(project: &Project) -> String {
     unreachable!("unbounded style ID search")
 }
 
+fn unique_style_id(project: &Project, base: &str) -> String {
+    if !project.styles.iter().any(|style| style.id == base) {
+        return base.to_string();
+    }
+
+    for index in 2.. {
+        let candidate = format!("{base}-{index}");
+        if !project.styles.iter().any(|style| style.id == candidate) {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded style ID search")
+}
+
 fn format_save_error(error: FormatError) -> String {
     match error {
         FormatError::Validation(report) => {
@@ -1131,5 +1582,59 @@ fn format_save_error(error: FormatError) -> String {
             }
         }
         other => format!("Save failed: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn character_palette_contains_only_valid_v1_characters() {
+        for ch in CHARACTER_PALETTE {
+            assert!(is_valid_v1_character(*ch), "{ch:?} should be V1-valid");
+        }
+    }
+
+    #[test]
+    fn selecting_palette_color_creates_new_tool_style_without_recoloring_cells() {
+        let mut app = AppState::editor(Project::new_image("palette", 4, 2), None, false, "");
+        app.project.first_frame_mut().cells.insert(
+            (0, 0),
+            PaintedCell {
+                ch: '#',
+                style_index: 0,
+            },
+        );
+        let original_style = app.project.styles[0].clone();
+        let red = COLOR_PALETTE
+            .iter()
+            .find(|palette_color| palette_color.name == "red")
+            .copied()
+            .expect("red palette entry");
+
+        app.select_palette_color(red);
+
+        assert_eq!(app.project.styles[0], original_style);
+        assert_eq!(app.project.first_frame().cells[&(0, 0)].style_index, 0);
+        assert_eq!(app.project.styles[app.current_style].fg, red.color);
+        assert_eq!(app.tool, Tool::Pencil);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn palette_hit_testing_maps_cells_to_items() {
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 6,
+            height: 2,
+        };
+
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 10, 5, 4), Some(0));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 13, 5, 4), Some(1));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 10, 6, 4), Some(2));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 13, 6, 4), Some(3));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 16, 6, 4), None);
     }
 }
