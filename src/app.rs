@@ -28,7 +28,7 @@ const DEFAULT_NEW_WIDTH: u16 = 48;
 const DEFAULT_NEW_HEIGHT: u16 = 16;
 const COLOR_SLOT_WIDTH: u16 = 3;
 const COLOR_SWATCH_WIDTH: u16 = 2;
-const CHAR_SLOT_WIDTH: u16 = 2;
+const CHAR_SLOT_WIDTH: u16 = 3;
 
 #[derive(Debug, Clone, Copy)]
 struct PaletteColor {
@@ -270,6 +270,12 @@ struct CellChange {
     after: Option<PaintedCell>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaletteHover {
+    Color(usize),
+    Character(usize),
+}
+
 struct AppState {
     screen: Screen,
     project: Project,
@@ -281,6 +287,7 @@ struct AppState {
     canvas_area: Rect,
     color_palette_area: Rect,
     character_palette_area: Rect,
+    hovered_palette: Option<PaletteHover>,
     undo_stack: Vec<Stroke>,
     redo_stack: Vec<Stroke>,
     active_stroke: Option<Stroke>,
@@ -345,6 +352,7 @@ impl AppState {
             canvas_area: Rect::default(),
             color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            hovered_palette: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -371,6 +379,7 @@ impl AppState {
             canvas_area: Rect::default(),
             color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            hovered_palette: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             active_stroke: None,
@@ -709,7 +718,10 @@ impl AppState {
             return;
         }
 
+        self.update_palette_hover(mouse.column, mouse.row);
+
         match mouse.kind {
+            MouseEventKind::Moved => {}
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
@@ -726,6 +738,27 @@ impl AppState {
             MouseEventKind::Up(MouseButton::Left) => self.finish_stroke(),
             _ => {}
         }
+    }
+
+    fn update_palette_hover(&mut self, column: u16, row: u16) {
+        self.hovered_palette = if let Some(index) = hit_palette_item(
+            self.color_palette_area,
+            COLOR_SLOT_WIDTH,
+            column,
+            row,
+            COLOR_PALETTE.len(),
+        ) {
+            Some(PaletteHover::Color(index))
+        } else {
+            hit_palette_item(
+                self.character_palette_area,
+                CHAR_SLOT_WIDTH,
+                column,
+                row,
+                CHARACTER_PALETTE.len(),
+            )
+            .map(PaletteHover::Character)
+        };
     }
 
     fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
@@ -1153,7 +1186,11 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             width: inner.width,
             height: color_height,
         };
-        draw_color_palette(frame, app.color_palette_area, style.fg);
+        let hovered_color = match app.hovered_palette {
+            Some(PaletteHover::Color(index)) => Some(index),
+            _ => None,
+        };
+        draw_color_palette(frame, app.color_palette_area, style.fg, hovered_color);
         y = y.saturating_add(color_height);
     }
 
@@ -1176,7 +1213,16 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             width: inner.width,
             height: character_height,
         };
-        draw_character_palette(frame, app.character_palette_area, app.brush_char);
+        let hovered_character = match app.hovered_palette {
+            Some(PaletteHover::Character(index)) => Some(index),
+            _ => None,
+        };
+        draw_character_palette(
+            frame,
+            app.character_palette_area,
+            app.brush_char,
+            hovered_character,
+        );
         y = y.saturating_add(character_height);
     }
 
@@ -1221,7 +1267,12 @@ fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
     }
 }
 
-fn draw_color_palette(frame: &mut Frame<'_>, area: Rect, selected_color: Color) {
+fn draw_color_palette(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    selected_color: Color,
+    hovered_index: Option<usize>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -1247,23 +1298,45 @@ fn draw_color_palette(frame: &mut Frame<'_>, area: Rect, selected_color: Color) 
 
         let marker_x = x + COLOR_SWATCH_WIDTH;
         if marker_x < area.x + area.width {
-            let marker = if palette_color.color == selected_color {
-                "*"
+            let selected = palette_color.color == selected_color;
+            let hovered = hovered_index == Some(index);
+            let (marker, marker_style) = if selected && hovered {
+                (
+                    "●",
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(198, 160, 246))
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if selected {
+                (
+                    "●",
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(245, 190, 82))
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if hovered {
+                (
+                    "›",
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(79, 209, 197))
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
-                " "
+                (" ", TuiStyle::default())
             };
             frame.buffer_mut()[(marker_x, y)]
                 .set_symbol(marker)
-                .set_style(TuiStyle::default().fg(TuiColor::Rgb(
-                    palette_color.color.r,
-                    palette_color.color.g,
-                    palette_color.color.b,
-                )));
+                .set_style(marker_style);
         }
     }
 }
 
-fn draw_character_palette(frame: &mut Frame<'_>, area: Rect, selected_char: char) {
+fn draw_character_palette(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    selected_char: char,
+    hovered_index: Option<usize>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -1275,21 +1348,37 @@ fn draw_character_palette(frame: &mut Frame<'_>, area: Rect, selected_char: char
             break;
         };
 
-        let style = if *ch == selected_char {
+        let selected = *ch == selected_char;
+        let hovered = hovered_index == Some(index);
+        let style = if selected && hovered {
             TuiStyle::default()
-                .fg(TuiColor::Black)
-                .bg(TuiColor::White)
+                .fg(TuiColor::Rgb(35, 32, 52))
+                .bg(TuiColor::Rgb(198, 160, 246))
+                .add_modifier(Modifier::BOLD)
+        } else if selected {
+            TuiStyle::default()
+                .fg(TuiColor::Rgb(34, 39, 46))
+                .bg(TuiColor::Rgb(245, 190, 82))
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            TuiStyle::default()
+                .fg(TuiColor::Rgb(20, 45, 50))
+                .bg(TuiColor::Rgb(79, 209, 197))
                 .add_modifier(Modifier::BOLD)
         } else {
-            TuiStyle::default().fg(TuiColor::White)
+            TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194))
         };
 
-        frame.buffer_mut()[(x, y)]
-            .set_symbol(&ch.to_string())
-            .set_style(style);
+        frame.buffer_mut()[(x, y)].set_symbol(" ").set_style(style);
 
         if x + 1 < area.x + area.width {
             frame.buffer_mut()[(x + 1, y)]
+                .set_symbol(&ch.to_string())
+                .set_style(style);
+        }
+
+        if x + 2 < area.x + area.width {
+            frame.buffer_mut()[(x + 2, y)]
                 .set_symbol(" ")
                 .set_style(style);
         }
@@ -1636,5 +1725,31 @@ mod tests {
         assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 10, 6, 4), Some(2));
         assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 13, 6, 4), Some(3));
         assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 16, 6, 4), None);
+    }
+
+    #[test]
+    fn palette_hover_tracks_color_and_character_items() {
+        let mut app = AppState::editor(Project::new_image("hover", 4, 2), None, false, "");
+        app.color_palette_area = Rect {
+            x: 1,
+            y: 1,
+            width: 6,
+            height: 2,
+        };
+        app.character_palette_area = Rect {
+            x: 1,
+            y: 5,
+            width: 9,
+            height: 2,
+        };
+
+        app.update_palette_hover(4, 1);
+        assert_eq!(app.hovered_palette, Some(PaletteHover::Color(1)));
+
+        app.update_palette_hover(7, 5);
+        assert_eq!(app.hovered_palette, Some(PaletteHover::Character(2)));
+
+        app.update_palette_hover(30, 30);
+        assert_eq!(app.hovered_palette, None);
     }
 }
