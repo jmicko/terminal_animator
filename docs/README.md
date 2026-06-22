@@ -1,0 +1,36 @@
+# Terminal Animator Docs
+
+Terminal Animator is a mouse-first terminal art and animation editor. The
+initial design target is simple: make it easy to draw terminal scenes by hand,
+preview them as animations, and export them into terminal applications without
+rewriting the art in Rust.
+
+## Documents
+
+- [Product spec](product-spec.md): user workflows, UI layout, tools, animation
+  behavior, and validation expectations.
+- [File format v1](file-format-v1.md): canonical `.tanim.toml` project format,
+  validation rules, export formats, and migration policy.
+- [Host integration](host-integration.md): how terminal applications should
+  consume Terminal Animator assets safely and efficiently.
+
+## Key Decisions
+
+- The canonical save format is `.tanim.toml`, not raw ANSI escape output.
+- ANSI and plain text are export formats only.
+- Coordinates are zero-based terminal cell positions, with `x` increasing right
+  and `y` increasing down.
+- Version 1 stores one image or animation asset per file.
+- Frames are sparse: omitted cells are transparent, and explicit space cells are
+  real painted cells.
+- The format supports foreground color, background color, and text attributes so
+  block art can avoid "holes" where colored details replace a colored body.
+- Schema version 1 is the file-format contract; implementation phases are
+  separate milestones and should start narrower than the full format.
+
+## Compatibility Contract
+
+The file-format details above are intentional integration points. Do not change
+coordinate semantics, sparse transparency behavior, frame timing, style
+resolution, normalized layout metadata, frame count rules, resource limits, or
+composition order without a schema migration.

@@ -1,0 +1,17 @@
+[package]
+name = "terminal_animator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+unicode-general-category = "1"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
