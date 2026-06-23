@@ -36,6 +36,7 @@ const EXPANDED_TONE_COUNT: usize = 16;
 const EXPANDED_NEUTRAL_COUNT: usize = 36;
 const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT + EXPANDED_NEUTRAL_COUNT;
 const MAX_RECENT_COLORS: usize = 24;
+const MAX_STAMPS: usize = 12;
 const ATTR_CHOICES: &[TextAttr] = &[
     TextAttr::Bold,
     TextAttr::Dim,
@@ -347,6 +348,8 @@ enum Tool {
     Eraser,
     Eyedropper,
     Fill,
+    Selection,
+    Stamp,
 }
 
 impl Tool {
@@ -356,6 +359,8 @@ impl Tool {
             Self::Eraser => "Eraser",
             Self::Eyedropper => "Eyedropper",
             Self::Fill => "Fill",
+            Self::Selection => "Select",
+            Self::Stamp => "Stamp",
         }
     }
 
@@ -365,11 +370,20 @@ impl Tool {
             Self::Eraser => "Clear cells to transparent",
             Self::Eyedropper => "Pick character and style from a cell",
             Self::Fill => "Flood-fill matching neighboring cells",
+            Self::Selection => "Drag, move, copy, cut, or stamp a region",
+            Self::Stamp => "Paste the current stamp",
         }
     }
 }
 
-const TOOL_CHOICES: &[Tool] = &[Tool::Pencil, Tool::Eraser, Tool::Eyedropper, Tool::Fill];
+const TOOL_CHOICES: &[Tool] = &[
+    Tool::Pencil,
+    Tool::Eraser,
+    Tool::Eyedropper,
+    Tool::Fill,
+    Tool::Selection,
+    Tool::Stamp,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopAction {
@@ -505,6 +519,27 @@ enum RgbControl {
     Increment(RgbChannel),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionAction {
+    Copy,
+    Cut,
+    Delete,
+    Stamp,
+    Clear,
+}
+
+impl SelectionAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Cut => "Cut",
+            Self::Delete => "Delete",
+            Self::Stamp => "Stamp",
+            Self::Clear => "Clear",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ButtonHit<T> {
     action: T,
@@ -582,6 +617,60 @@ struct CellChange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellRect {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+impl CellRect {
+    fn from_points(start: (u16, u16), end: (u16, u16)) -> Self {
+        let x = start.0.min(end.0);
+        let y = start.1.min(end.1);
+        let max_x = start.0.max(end.0);
+        let max_y = start.1.max(end.1);
+
+        Self {
+            x,
+            y,
+            width: max_x - x + 1,
+            height: max_y - y + 1,
+        }
+    }
+
+    fn contains(self, x: u16, y: u16) -> bool {
+        x >= self.x
+            && y >= self.y
+            && x < self.x.saturating_add(self.width)
+            && y < self.y.saturating_add(self.height)
+    }
+
+    fn is_border(self, x: u16, y: u16) -> bool {
+        self.contains(x, y)
+            && (x == self.x
+                || y == self.y
+                || x + 1 == self.x.saturating_add(self.width)
+                || y + 1 == self.y.saturating_add(self.height))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    width: u16,
+    height: u16,
+    cells: BTreeMap<(u16, u16), PaintedCell>,
+}
+
+#[derive(Debug, Clone)]
+struct MovingSelection {
+    source: CellRect,
+    stamp: Stamp,
+    grab_offset: (u16, u16),
+    destination: (u16, u16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaletteHover {
     Color(usize),
     Character(usize),
@@ -597,6 +686,11 @@ struct AppState {
     current_style: usize,
     current_frame_index: usize,
     onion_skin: bool,
+    selection: Option<CellRect>,
+    selection_drag_anchor: Option<(u16, u16)>,
+    moving_selection: Option<MovingSelection>,
+    stamps: Vec<Stamp>,
+    current_stamp_index: Option<usize>,
     canvas_area: Rect,
     tool_button_area: Rect,
     brush_button_area: Rect,
@@ -604,6 +698,7 @@ struct AppState {
     recent_color_palette_area: Rect,
     character_palette_area: Rect,
     attr_button_areas: Vec<ButtonHit<TextAttr>>,
+    selection_action_areas: Vec<ButtonHit<SelectionAction>>,
     more_colors_button_area: Rect,
     rgb_button_area: Rect,
     welcome_action_areas: Vec<ButtonHit<WelcomeAction>>,
@@ -618,6 +713,7 @@ struct AppState {
     hovered_palette: Option<PaletteHover>,
     hovered_recent_color: Option<usize>,
     hovered_attr: Option<TextAttr>,
+    hovered_selection_action: Option<SelectionAction>,
     hovered_welcome_action: Option<WelcomeAction>,
     hovered_top_action: Option<TopAction>,
     hovered_tool_button: bool,
@@ -693,6 +789,11 @@ impl AppState {
             current_style: 0,
             current_frame_index: 0,
             onion_skin: false,
+            selection: None,
+            selection_drag_anchor: None,
+            moving_selection: None,
+            stamps: Vec::new(),
+            current_stamp_index: None,
             canvas_area: Rect::default(),
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
@@ -700,6 +801,7 @@ impl AppState {
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
             attr_button_areas: Vec::new(),
+            selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
@@ -714,6 +816,7 @@ impl AppState {
             hovered_palette: None,
             hovered_recent_color: None,
             hovered_attr: None,
+            hovered_selection_action: None,
             hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
@@ -751,6 +854,11 @@ impl AppState {
             current_style: 0,
             current_frame_index: 0,
             onion_skin: false,
+            selection: None,
+            selection_drag_anchor: None,
+            moving_selection: None,
+            stamps: Vec::new(),
+            current_stamp_index: None,
             canvas_area: Rect::default(),
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
@@ -758,6 +866,7 @@ impl AppState {
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
             attr_button_areas: Vec::new(),
+            selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
@@ -772,6 +881,7 @@ impl AppState {
             hovered_palette: None,
             hovered_recent_color: None,
             hovered_attr: None,
+            hovered_selection_action: None,
             hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
@@ -877,16 +987,38 @@ impl AppState {
                     self.redo();
                     return;
                 }
+                KeyCode::Char('c') => {
+                    self.copy_selection_to_stamp();
+                    return;
+                }
+                KeyCode::Char('x') => {
+                    self.cut_selection_to_stamp();
+                    return;
+                }
+                KeyCode::Char('v') => {
+                    self.select_stamp_tool();
+                    return;
+                }
                 _ => {}
             }
         }
 
         match key.code {
+            KeyCode::Right if self.can_nudge_selection() => self.nudge_selection(1, 0),
+            KeyCode::Left if self.can_nudge_selection() => self.nudge_selection(-1, 0),
+            KeyCode::Up if self.can_nudge_selection() => self.nudge_selection(0, -1),
+            KeyCode::Down if self.can_nudge_selection() => self.nudge_selection(0, 1),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right => {
                 self.next_frame_or_create();
             }
             KeyCode::Left => {
                 self.previous_frame_or_message();
+            }
+            KeyCode::Delete | KeyCode::Backspace if self.selection.is_some() => {
+                self.delete_selection();
+            }
+            KeyCode::Esc if self.selection.is_some() => {
+                self.clear_selection();
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.duplicate_current_frame();
@@ -905,6 +1037,9 @@ impl AppState {
             }
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.select_tool(Tool::Eyedropper);
+            }
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                self.select_tool(Tool::Selection);
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.modal = Some(Modal::BrushChar {
@@ -992,6 +1127,12 @@ impl AppState {
                 }
                 KeyCode::Char('4') | KeyCode::Char('f') | KeyCode::Char('F') => {
                     self.select_tool_from_menu(Tool::Fill);
+                }
+                KeyCode::Char('5') | KeyCode::Char('v') | KeyCode::Char('V') => {
+                    self.select_tool_from_menu(Tool::Selection);
+                }
+                KeyCode::Char('6') | KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.select_tool_from_menu(Tool::Stamp);
                 }
                 _ => {}
             }
@@ -1313,12 +1454,24 @@ impl AppState {
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
                 }
+                if matches!(self.tool, Tool::Selection) {
+                    self.begin_selection_mouse(mouse.column, mouse.row);
+                    return;
+                }
+                if matches!(self.tool, Tool::Stamp) {
+                    self.paste_stamp_at_screen(mouse.column, mouse.row);
+                    return;
+                }
                 if matches!(self.tool, Tool::Pencil | Tool::Eraser) {
                     self.active_stroke = Some(Stroke::new(self.current_frame_index));
                 }
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                if matches!(self.tool, Tool::Selection) {
+                    self.update_selection_mouse(mouse.column, mouse.row);
+                    return;
+                }
                 if !matches!(self.tool, Tool::Pencil | Tool::Eraser) {
                     return;
                 }
@@ -1327,7 +1480,13 @@ impl AppState {
                 }
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
-            MouseEventKind::Up(MouseButton::Left) => self.finish_stroke(),
+            MouseEventKind::Up(MouseButton::Left) => {
+                if matches!(self.tool, Tool::Selection) {
+                    self.finish_selection_mouse();
+                } else {
+                    self.finish_stroke();
+                }
+            }
             _ => {}
         }
     }
@@ -1426,12 +1585,14 @@ impl AppState {
         self.hovered_more_colors_button = rect_contains(self.more_colors_button_area, column, row);
         self.hovered_rgb_button = rect_contains(self.rgb_button_area, column, row);
         self.hovered_attr = self.attr_action_at(column, row);
+        self.hovered_selection_action = self.selection_action_at(column, row);
         self.hovered_canvas_cell = if self.hovered_top_action.is_none()
             && !self.hovered_tool_button
             && !self.hovered_brush_button
             && !self.hovered_more_colors_button
             && !self.hovered_rgb_button
             && self.hovered_attr.is_none()
+            && self.hovered_selection_action.is_none()
         {
             self.canvas_cell_at(column, row).map(|(x, y)| (y, x))
         } else {
@@ -1516,6 +1677,13 @@ impl AppState {
             .map(|hit| hit.action)
     }
 
+    fn selection_action_at(&self, column: u16, row: u16) -> Option<SelectionAction> {
+        self.selection_action_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
     fn apply_rgb_control(&mut self, control: RgbControl, column: u16) {
         match control {
             RgbControl::Decrement(channel) => self.adjust_rgb_channel(channel, -1),
@@ -1575,6 +1743,11 @@ impl AppState {
     }
 
     fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
+        if let Some(action) = self.selection_action_at(column, row) {
+            self.run_selection_action(action);
+            return true;
+        }
+
         if let Some(attr) = self.attr_action_at(column, row) {
             self.toggle_current_attr(attr);
             return true;
@@ -1619,6 +1792,319 @@ impl AppState {
         }
 
         false
+    }
+
+    fn run_selection_action(&mut self, action: SelectionAction) {
+        match action {
+            SelectionAction::Copy => self.copy_selection_to_stamp(),
+            SelectionAction::Cut => self.cut_selection_to_stamp(),
+            SelectionAction::Delete => self.delete_selection(),
+            SelectionAction::Stamp => self.save_selection_as_stamp(),
+            SelectionAction::Clear => self.clear_selection(),
+        }
+    }
+
+    fn begin_selection_mouse(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+
+        if let Some(selection) = self.selection
+            && selection.contains(x, y)
+        {
+            self.moving_selection = Some(MovingSelection {
+                source: selection,
+                stamp: self.capture_rect(selection),
+                grab_offset: (x - selection.x, y - selection.y),
+                destination: (selection.x, selection.y),
+            });
+            self.selection_drag_anchor = None;
+            self.message = "Drag to move selection".to_string();
+            return;
+        }
+
+        self.selection_drag_anchor = Some((x, y));
+        self.moving_selection = None;
+        self.selection = Some(CellRect::from_points((x, y), (x, y)));
+        self.message = "Drag to select cells".to_string();
+    }
+
+    fn update_selection_mouse(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+
+        if let Some(moving) = self.moving_selection.as_ref() {
+            let (width, height, grab_offset) = (
+                moving.source.width,
+                moving.source.height,
+                moving.grab_offset,
+            );
+            let destination = self.clamp_rect_destination(
+                width,
+                height,
+                x.saturating_sub(grab_offset.0),
+                y.saturating_sub(grab_offset.1),
+            );
+            if let Some(moving) = self.moving_selection.as_mut() {
+                moving.destination = destination;
+            }
+            return;
+        }
+
+        if let Some(anchor) = self.selection_drag_anchor {
+            self.selection = Some(CellRect::from_points(anchor, (x, y)));
+        }
+    }
+
+    fn finish_selection_mouse(&mut self) {
+        if let Some(moving) = self.moving_selection.take() {
+            self.commit_selection_move(moving);
+            return;
+        }
+
+        if self.selection_drag_anchor.take().is_some()
+            && let Some(selection) = self.selection
+        {
+            self.message = format!("Selected {}x{}", selection.width, selection.height);
+        }
+    }
+
+    fn copy_selection_to_stamp(&mut self) {
+        let Some(selection) = self.selection else {
+            self.message = "No selection to copy".to_string();
+            return;
+        };
+
+        let stamp = self.capture_rect(selection);
+        if stamp.cells.is_empty() {
+            self.message = "Selection has no painted cells".to_string();
+            return;
+        }
+
+        self.add_stamp(stamp);
+        self.message = "Copied selection to stamp".to_string();
+    }
+
+    fn cut_selection_to_stamp(&mut self) {
+        let Some(selection) = self.selection else {
+            self.message = "No selection to cut".to_string();
+            return;
+        };
+
+        let stamp = self.capture_rect(selection);
+        if !stamp.cells.is_empty() {
+            self.add_stamp(stamp);
+        }
+        self.delete_selection();
+        self.tool = Tool::Stamp;
+    }
+
+    fn save_selection_as_stamp(&mut self) {
+        let Some(selection) = self.selection else {
+            self.message = "No selection to stamp".to_string();
+            return;
+        };
+
+        let stamp = self.capture_rect(selection);
+        if stamp.cells.is_empty() {
+            self.message = "Selection has no painted cells".to_string();
+            return;
+        }
+
+        let width = stamp.width;
+        let height = stamp.height;
+        self.add_stamp(stamp);
+        self.tool = Tool::Stamp;
+        self.message = format!("Saved {width}x{height} stamp");
+    }
+
+    fn delete_selection(&mut self) {
+        let Some(selection) = self.selection else {
+            self.message = "No selection to delete".to_string();
+            return;
+        };
+
+        let updates = clear_rect_updates(selection);
+        self.apply_cell_updates(updates, "Deleted selection");
+    }
+
+    fn clear_selection(&mut self) {
+        self.reset_selection_state();
+        self.message = "Selection cleared".to_string();
+    }
+
+    fn reset_selection_state(&mut self) {
+        self.selection = None;
+        self.selection_drag_anchor = None;
+        self.moving_selection = None;
+    }
+
+    fn select_stamp_tool(&mut self) {
+        if self.current_stamp().is_some() {
+            self.tool = Tool::Stamp;
+            self.message = "Stamp tool selected".to_string();
+        } else {
+            self.message = "No stamp available".to_string();
+        }
+    }
+
+    fn paste_stamp_at_screen(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+        self.paste_stamp_at(x, y);
+    }
+
+    fn paste_stamp_at(&mut self, x: u16, y: u16) {
+        let Some(stamp) = self.current_stamp().cloned() else {
+            self.message = "No stamp available".to_string();
+            return;
+        };
+
+        let mut updates = BTreeMap::new();
+        for (&(relative_y, relative_x), cell) in &stamp.cells {
+            let Some(target_x) = x.checked_add(relative_x) else {
+                continue;
+            };
+            let Some(target_y) = y.checked_add(relative_y) else {
+                continue;
+            };
+            if target_x < self.project.asset.width && target_y < self.project.asset.height {
+                updates.insert((target_y, target_x), Some(cell.clone()));
+            }
+        }
+
+        self.apply_cell_updates(updates, "Pasted stamp");
+    }
+
+    fn can_nudge_selection(&self) -> bool {
+        self.tool == Tool::Selection && self.selection.is_some()
+    }
+
+    fn nudge_selection(&mut self, dx: i16, dy: i16) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let stamp = self.capture_rect(selection);
+        let max_x = self.project.asset.width.saturating_sub(selection.width);
+        let max_y = self.project.asset.height.saturating_sub(selection.height);
+        let destination = (
+            offset_coord(selection.x, dx, max_x),
+            offset_coord(selection.y, dy, max_y),
+        );
+        self.commit_selection_move(MovingSelection {
+            source: selection,
+            stamp,
+            grab_offset: (0, 0),
+            destination,
+        });
+    }
+
+    fn commit_selection_move(&mut self, moving: MovingSelection) {
+        let destination = self.clamp_rect_destination(
+            moving.source.width,
+            moving.source.height,
+            moving.destination.0,
+            moving.destination.1,
+        );
+        let moved_rect = CellRect {
+            x: destination.0,
+            y: destination.1,
+            width: moving.source.width,
+            height: moving.source.height,
+        };
+        self.selection = Some(moved_rect);
+
+        if destination == (moving.source.x, moving.source.y) {
+            self.message = "Selection unchanged".to_string();
+            return;
+        }
+
+        let mut updates = clear_rect_updates(moving.source);
+        for (&(relative_y, relative_x), cell) in &moving.stamp.cells {
+            let target_x = destination.0 + relative_x;
+            let target_y = destination.1 + relative_y;
+            updates.insert((target_y, target_x), Some(cell.clone()));
+        }
+        self.apply_cell_updates(updates, "Moved selection");
+    }
+
+    fn capture_rect(&self, rect: CellRect) -> Stamp {
+        let mut cells = BTreeMap::new();
+        for (&(y, x), cell) in &self.current_frame().cells {
+            if rect.contains(x, y) {
+                cells.insert((y - rect.y, x - rect.x), cell.clone());
+            }
+        }
+
+        Stamp {
+            width: rect.width,
+            height: rect.height,
+            cells,
+        }
+    }
+
+    fn add_stamp(&mut self, stamp: Stamp) {
+        self.stamps.insert(0, stamp);
+        self.stamps.truncate(MAX_STAMPS);
+        self.current_stamp_index = Some(0);
+    }
+
+    fn current_stamp(&self) -> Option<&Stamp> {
+        self.current_stamp_index
+            .and_then(|index| self.stamps.get(index))
+    }
+
+    fn clamp_rect_destination(&self, width: u16, height: u16, x: u16, y: u16) -> (u16, u16) {
+        (
+            x.min(self.project.asset.width.saturating_sub(width)),
+            y.min(self.project.asset.height.saturating_sub(height)),
+        )
+    }
+
+    fn apply_cell_updates(
+        &mut self,
+        updates: BTreeMap<(u16, u16), Option<PaintedCell>>,
+        message: &'static str,
+    ) {
+        let frame_index = self.current_frame_index;
+        let frame = self.current_frame_mut();
+        let mut stroke = Stroke::new(frame_index);
+
+        for (key, after) in updates {
+            let before = frame.cells.get(&key).cloned();
+            if before == after {
+                continue;
+            }
+
+            stroke.changes.insert(
+                key,
+                CellChange {
+                    before,
+                    after: after.clone(),
+                },
+            );
+
+            match after {
+                Some(cell) => {
+                    frame.cells.insert(key, cell);
+                }
+                None => {
+                    frame.cells.remove(&key);
+                }
+            }
+        }
+
+        if stroke.changes.is_empty() {
+            self.message = "No cells changed".to_string();
+            return;
+        }
+
+        self.undo_stack.push(stroke);
+        self.redo_stack.clear();
+        self.dirty = true;
+        self.message = message.to_string();
     }
 
     fn select_palette_color(&mut self, palette_color: PaletteColor) {
@@ -1770,6 +2256,7 @@ impl AppState {
                 }
             }
             Tool::Fill => self.fill_at(x, y),
+            Tool::Selection | Tool::Stamp => {}
         }
     }
 
@@ -1927,6 +2414,10 @@ impl AppState {
     }
 
     fn select_tool(&mut self, tool: Tool) {
+        if tool == Tool::Stamp && self.current_stamp().is_none() {
+            self.message = "No stamp available".to_string();
+            return;
+        }
         self.tool = tool;
         self.message = format!("{} selected", tool.label());
     }
@@ -1945,6 +2436,7 @@ impl AppState {
         }
 
         self.current_frame_index -= 1;
+        self.reset_selection_state();
         self.message = self.frame_position_message("Frame");
     }
 
@@ -1952,6 +2444,7 @@ impl AppState {
         self.finish_stroke();
         if self.current_frame_index + 1 < self.project.frames.len() {
             self.current_frame_index += 1;
+            self.reset_selection_state();
             self.message = self.frame_position_message("Frame");
             return;
         }
@@ -1987,6 +2480,7 @@ impl AppState {
         };
         self.project.frames.insert(insert_index, frame);
         self.current_frame_index = insert_index;
+        self.reset_selection_state();
         self.normalize_frame_kind();
         self.dirty = true;
         self.undo_stack.clear();
@@ -2426,6 +2920,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     app.recent_color_palette_area = Rect::default();
     app.character_palette_area = Rect::default();
     app.attr_button_areas.clear();
+    app.selection_action_areas.clear();
     app.more_colors_button_area = Rect::default();
     app.rgb_button_area = Rect::default();
 
@@ -2473,6 +2968,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     );
     draw_sidebar_line(frame, inner, &mut y, max_y, format!("BG: {bg}"), normal);
     draw_attr_toggles(frame, app, inner, &mut y, max_y, &style.attrs);
+    draw_selection_controls(frame, app, inner, &mut y, max_y);
     draw_sidebar_spacer(&mut y, max_y);
 
     draw_sidebar_line(frame, inner, &mut y, max_y, "Colors".to_string(), strong);
@@ -2686,6 +3182,77 @@ fn draw_attr_toggles(
     *y = y.saturating_add(1);
 }
 
+fn draw_selection_controls(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    y: &mut u16,
+    max_y: u16,
+) {
+    let Some(selection) = app.selection else {
+        if let Some(stamp) = app.current_stamp() {
+            draw_sidebar_line(
+                frame,
+                area,
+                y,
+                max_y,
+                format!(
+                    "Stamp {}/{}: {}x{}",
+                    app.current_stamp_index.unwrap_or(0) + 1,
+                    app.stamps.len(),
+                    stamp.width,
+                    stamp.height
+                ),
+                TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+            );
+        }
+        return;
+    };
+
+    draw_sidebar_line(
+        frame,
+        area,
+        y,
+        max_y,
+        format!("Selection: {}x{}", selection.width, selection.height),
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+    if *y >= max_y {
+        return;
+    }
+
+    let mut x = area.x;
+    let max_x = area.x.saturating_add(area.width);
+    for action in [
+        SelectionAction::Copy,
+        SelectionAction::Cut,
+        SelectionAction::Delete,
+        SelectionAction::Stamp,
+        SelectionAction::Clear,
+    ] {
+        let width = u16::try_from(action.label().chars().count()).unwrap_or(0) + 2;
+        if x.saturating_add(width) > max_x {
+            break;
+        }
+
+        let button = Rect {
+            x,
+            y: *y,
+            width,
+            height: 1,
+        };
+        let style = choice_style(false, app.hovered_selection_action == Some(action));
+        fill_rect(frame, button, style);
+        draw_text_centered(frame, button, button.y, action.label(), style);
+        app.selection_action_areas.push(ButtonHit {
+            action,
+            area: button,
+        });
+        x = x.saturating_add(width + 1);
+    }
+    *y = y.saturating_add(1);
+}
+
 fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
     if *y < max_y {
         *y = y.saturating_add(1);
@@ -2873,6 +3440,24 @@ fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
         && row < area.y + area.height
 }
 
+fn clear_rect_updates(rect: CellRect) -> BTreeMap<(u16, u16), Option<PaintedCell>> {
+    let mut updates = BTreeMap::new();
+    for y in rect.y..rect.y.saturating_add(rect.height) {
+        for x in rect.x..rect.x.saturating_add(rect.width) {
+            updates.insert((y, x), None);
+        }
+    }
+    updates
+}
+
+fn offset_coord(value: u16, delta: i16, max_value: u16) -> u16 {
+    if delta.is_negative() {
+        value.saturating_sub(delta.unsigned_abs())
+    } else {
+        value.saturating_add(delta as u16).min(max_value)
+    }
+}
+
 fn fill_rect(frame: &mut Frame<'_>, area: Rect, style: TuiStyle) {
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
@@ -2919,6 +3504,20 @@ fn palette_char_symbol(ch: char) -> String {
         "·".to_string()
     } else {
         ch.to_string()
+    }
+}
+
+fn selection_border_symbol(selection: CellRect, x: u16, y: u16) -> &'static str {
+    let left = x == selection.x;
+    let right = x + 1 == selection.x.saturating_add(selection.width);
+    let top = y == selection.y;
+    let bottom = y + 1 == selection.y.saturating_add(selection.height);
+
+    match (left || right, top || bottom) {
+        (true, true) => "+",
+        (true, false) => "|",
+        (false, true) => "-",
+        (false, false) => " ",
     }
 }
 
@@ -3146,8 +3745,23 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             let screen_y = inner.y + y;
             let buffer_cell = &mut frame.buffer_mut()[(screen_x, screen_y)];
             let hovered = app.hovered_canvas_cell == Some((y, x));
+            let moving_preview_cell = app.moving_selection.as_ref().and_then(|moving| {
+                let relative_x = x.checked_sub(moving.destination.0)?;
+                let relative_y = y.checked_sub(moving.destination.1)?;
+                if relative_x < moving.stamp.width && relative_y < moving.stamp.height {
+                    moving.stamp.cells.get(&(relative_y, relative_x))
+                } else {
+                    None
+                }
+            });
 
-            if let Some(cell) = app.current_frame().cells.get(&(y, x)) {
+            if let Some(cell) = moving_preview_cell {
+                let style = style_to_tui(&app.project.styles[cell.style_index])
+                    .bg(TuiColor::Rgb(69, 55, 98));
+                let symbol = cell.ch.to_string();
+                buffer_cell.set_symbol(&symbol);
+                buffer_cell.set_style(style);
+            } else if let Some(cell) = app.current_frame().cells.get(&(y, x)) {
                 let mut style = style_to_tui(&app.project.styles[cell.style_index]);
                 if hovered {
                     style = style.bg(TuiColor::Rgb(33, 77, 85));
@@ -3180,6 +3794,35 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
                 buffer_cell.set_symbol(".");
                 buffer_cell.set_style(style);
             }
+
+            let selection_rect = app
+                .moving_selection
+                .as_ref()
+                .map(|moving| CellRect {
+                    x: moving.destination.0,
+                    y: moving.destination.1,
+                    width: moving.source.width,
+                    height: moving.source.height,
+                })
+                .or(app.selection);
+            if let Some(selection) = selection_rect
+                && selection.is_border(x, y)
+            {
+                let style = if app.moving_selection.is_some() {
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(198, 160, 246))
+                        .bg(TuiColor::Rgb(35, 32, 52))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    TuiStyle::default()
+                        .fg(TuiColor::Rgb(245, 190, 82))
+                        .bg(TuiColor::Rgb(34, 39, 46))
+                        .add_modifier(Modifier::BOLD)
+                };
+                buffer_cell
+                    .set_symbol(selection_border_symbol(selection, x, y))
+                    .set_style(style);
+            }
         }
     }
 
@@ -3198,7 +3841,8 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help = "Click Tool/top actions/palettes | N/Right next | D duplicate | B blank | O onion";
+    let help =
+        "V select | drag selection to move | Ctrl-C/X copy/cut | Stamp tool pastes | N/Right next";
     let lines = vec![
         Line::from(help),
         Line::from(app.message.as_str()),
@@ -3781,6 +4425,8 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
             Tool::Eraser => "E",
             Tool::Eyedropper => "I",
             Tool::Fill => "F",
+            Tool::Selection => "V",
+            Tool::Stamp => "S",
         };
         let label = format!(
             "{}  {}  {:<10} {}",
@@ -4210,6 +4856,104 @@ mod tests {
         assert_eq!(app.current_frame().cells[&(0, 0)].ch, '.');
         assert_eq!(app.current_frame().cells[&(0, 1)].ch, '|');
         assert!(!app.current_frame().cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn copy_selection_creates_current_stamp() {
+        let mut app = AppState::editor(Project::new_image("select", 3, 2), None, false, "");
+        app.current_frame_mut().cells.insert(
+            (0, 1),
+            PaintedCell {
+                ch: 'x',
+                style_index: 0,
+            },
+        );
+        app.selection = Some(CellRect {
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 2,
+        });
+
+        app.copy_selection_to_stamp();
+
+        let stamp = app.current_stamp().expect("current stamp");
+        assert_eq!(stamp.width, 2);
+        assert_eq!(stamp.height, 2);
+        assert_eq!(stamp.cells[&(0, 0)].ch, 'x');
+        assert_eq!(app.stamps.len(), 1);
+    }
+
+    #[test]
+    fn moving_selection_handles_overlap_and_undoes_as_one_change() {
+        let mut app = AppState::editor(Project::new_image("move", 4, 1), None, false, "");
+        app.current_frame_mut().cells.insert(
+            (0, 0),
+            PaintedCell {
+                ch: 'a',
+                style_index: 0,
+            },
+        );
+        app.current_frame_mut().cells.insert(
+            (0, 1),
+            PaintedCell {
+                ch: 'b',
+                style_index: 0,
+            },
+        );
+        let source = CellRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
+        let stamp = app.capture_rect(source);
+
+        app.commit_selection_move(MovingSelection {
+            source,
+            stamp,
+            grab_offset: (0, 0),
+            destination: (1, 0),
+        });
+
+        assert!(!app.current_frame().cells.contains_key(&(0, 0)));
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, 'a');
+        assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'b');
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo();
+
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, 'a');
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, 'b');
+        assert!(!app.current_frame().cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn cut_selection_creates_stamp_and_paste_places_it() {
+        let mut app = AppState::editor(Project::new_image("stamp", 4, 1), None, false, "");
+        app.current_frame_mut().cells.insert(
+            (0, 0),
+            PaintedCell {
+                ch: 'z',
+                style_index: 0,
+            },
+        );
+        app.selection = Some(CellRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        });
+
+        app.cut_selection_to_stamp();
+
+        assert_eq!(app.tool, Tool::Stamp);
+        assert!(!app.current_frame().cells.contains_key(&(0, 0)));
+        assert!(app.current_stamp().is_some());
+
+        app.paste_stamp_at(2, 0);
+
+        assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'z');
     }
 
     #[test]
