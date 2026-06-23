@@ -523,6 +523,9 @@ enum Modal {
     SaveAs {
         input: String,
     },
+    OverwriteConfirm {
+        path: PathBuf,
+    },
     BrushChar {
         input: String,
     },
@@ -1116,9 +1119,15 @@ impl AppState {
                 }
 
                 if path.exists() {
-                    self.message = format!("Overwriting {}", path.display());
+                    self.message = format!("Confirm overwrite {}", path.display());
+                    self.modal = Some(Modal::OverwriteConfirm { path });
+                    return;
                 }
 
+                self.file_path = Some(path);
+                self.save();
+            }
+            Modal::OverwriteConfirm { path } => {
                 self.file_path = Some(path);
                 self.save();
             }
@@ -3212,6 +3221,10 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::NewAnimation { input, .. } => ("New Animation", format!("Dimensions: {input}")),
         Modal::OpenFile { input } => ("Open File", format!("Path: {input}")),
         Modal::SaveAs { input } => ("Save As", format!("Path: {input}")),
+        Modal::OverwriteConfirm { path } => (
+            "Overwrite File",
+            format!("Replace existing file {}?", path.display()),
+        ),
         Modal::BrushChar { input } => ("Brush Character", format!("Character: {input}")),
         Modal::NewStyle { input } => ("New Style", format!("Style ID: {input}")),
         Modal::RenameStyle { input } => ("Rename Style", format!("Style ID: {input}")),
@@ -3758,7 +3771,11 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::SetFg { input }
         | Modal::SetBg { input }
         | Modal::ExportText { input } => Some(input),
-        Modal::RgbInput { .. } | Modal::ColorPicker | Modal::ToolMenu | Modal::QuitConfirm => None,
+        Modal::OverwriteConfirm { .. }
+        | Modal::RgbInput { .. }
+        | Modal::ColorPicker
+        | Modal::ToolMenu
+        | Modal::QuitConfirm => None,
     }
 }
 
@@ -4294,6 +4311,33 @@ mod tests {
         app.close_modal("");
         app.run_welcome_action(WelcomeAction::OpenFile);
         assert!(matches!(app.modal, Some(Modal::OpenFile { .. })));
+    }
+
+    #[test]
+    fn save_as_existing_path_requires_overwrite_confirmation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("existing.tanim.toml");
+        fs::write(&path, "old contents").expect("write existing");
+        let mut app = AppState::editor(Project::new_image("save", 4, 2), None, true, "");
+
+        app.commit_modal(Modal::SaveAs {
+            input: path.display().to_string(),
+        });
+
+        assert!(matches!(app.modal, Some(Modal::OverwriteConfirm { .. })));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read existing"),
+            "old contents"
+        );
+
+        let modal = app.modal.take().expect("overwrite modal");
+        app.commit_modal(modal);
+
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read saved")
+                .contains("schema_version = 1")
+        );
     }
 
     #[test]
