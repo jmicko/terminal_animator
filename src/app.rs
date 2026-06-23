@@ -13,7 +13,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color as TuiColor, Modifier, Style as TuiStyle};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -30,6 +30,8 @@ const COLOR_SLOT_WIDTH: u16 = 4;
 const COLOR_SWATCH_WIDTH: u16 = 2;
 const CHAR_SLOT_WIDTH: u16 = 3;
 const TOP_BUTTON_GAP: u16 = 1;
+const MORE_COLOR_COUNT: usize = 216;
+const MAX_RECENT_COLORS: usize = 24;
 
 #[derive(Debug, Clone, Copy)]
 struct PaletteColor {
@@ -141,6 +143,114 @@ const COLOR_PALETTE: &[PaletteColor] = &[
             r: 218,
             g: 101,
             b: 157,
+        },
+    },
+    PaletteColor {
+        name: "brown",
+        id_base: "palette-brown",
+        color: Color {
+            r: 139,
+            g: 89,
+            b: 55,
+        },
+    },
+    PaletteColor {
+        name: "tan",
+        id_base: "palette-tan",
+        color: Color {
+            r: 194,
+            g: 166,
+            b: 122,
+        },
+    },
+    PaletteColor {
+        name: "coral",
+        id_base: "palette-coral",
+        color: Color {
+            r: 238,
+            g: 112,
+            b: 92,
+        },
+    },
+    PaletteColor {
+        name: "rose",
+        id_base: "palette-rose",
+        color: Color {
+            r: 224,
+            g: 91,
+            b: 122,
+        },
+    },
+    PaletteColor {
+        name: "magenta",
+        id_base: "palette-magenta",
+        color: Color {
+            r: 202,
+            g: 90,
+            b: 214,
+        },
+    },
+    PaletteColor {
+        name: "violet",
+        id_base: "palette-violet",
+        color: Color {
+            r: 113,
+            g: 89,
+            b: 193,
+        },
+    },
+    PaletteColor {
+        name: "navy",
+        id_base: "palette-navy",
+        color: Color {
+            r: 49,
+            g: 74,
+            b: 112,
+        },
+    },
+    PaletteColor {
+        name: "sky",
+        id_base: "palette-sky",
+        color: Color {
+            r: 116,
+            g: 174,
+            b: 220,
+        },
+    },
+    PaletteColor {
+        name: "teal",
+        id_base: "palette-teal",
+        color: Color {
+            r: 53,
+            g: 140,
+            b: 130,
+        },
+    },
+    PaletteColor {
+        name: "lime",
+        id_base: "palette-lime",
+        color: Color {
+            r: 151,
+            g: 195,
+            b: 67,
+        },
+    },
+    PaletteColor {
+        name: "olive",
+        id_base: "palette-olive",
+        color: Color {
+            r: 117,
+            g: 132,
+            b: 58,
+        },
+    },
+    PaletteColor {
+        name: "gold",
+        id_base: "palette-gold",
+        color: Color {
+            r: 221,
+            g: 166,
+            b: 45,
         },
     },
 ];
@@ -273,6 +383,50 @@ const TOP_ACTIONS: &[TopAction] = &[
     TopAction::Quit,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WelcomeAction {
+    NewImage,
+    OpenFile,
+    Quit,
+}
+
+impl WelcomeAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::NewImage => "New Image",
+            Self::OpenFile => "Open File",
+            Self::Quit => "Quit",
+        }
+    }
+}
+
+const WELCOME_ACTIONS: &[WelcomeAction] = &[
+    WelcomeAction::NewImage,
+    WelcomeAction::OpenFile,
+    WelcomeAction::Quit,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalAction {
+    Confirm,
+    Cancel,
+    RgbInput,
+    SaveAndQuit,
+    Discard,
+}
+
+impl ModalAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Confirm => "OK",
+            Self::Cancel => "Cancel",
+            Self::RgbInput => "RGB",
+            Self::SaveAndQuit => "Save",
+            Self::Discard => "Discard",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ButtonHit<T> {
     action: T,
@@ -306,9 +460,13 @@ enum Modal {
     SetBg {
         input: String,
     },
+    RgbInput {
+        input: String,
+    },
     ExportText {
         input: String,
     },
+    ColorPicker,
     ToolMenu,
     QuitConfirm,
 }
@@ -342,15 +500,29 @@ struct AppState {
     tool_button_area: Rect,
     brush_button_area: Rect,
     color_palette_area: Rect,
+    recent_color_palette_area: Rect,
     character_palette_area: Rect,
+    more_colors_button_area: Rect,
+    rgb_button_area: Rect,
+    welcome_action_areas: Vec<ButtonHit<WelcomeAction>>,
     top_action_areas: Vec<ButtonHit<TopAction>>,
     modal_tool_areas: Vec<ButtonHit<Tool>>,
+    modal_action_areas: Vec<ButtonHit<ModalAction>>,
+    modal_color_areas: Vec<ButtonHit<usize>>,
     modal_area: Rect,
+    recent_extra_colors: Vec<Color>,
+    color_picker_scroll_row: usize,
     hovered_palette: Option<PaletteHover>,
+    hovered_recent_color: Option<usize>,
+    hovered_welcome_action: Option<WelcomeAction>,
     hovered_top_action: Option<TopAction>,
     hovered_tool_button: bool,
     hovered_brush_button: bool,
+    hovered_more_colors_button: bool,
+    hovered_rgb_button: bool,
     hovered_modal_tool: Option<Tool>,
+    hovered_modal_action: Option<ModalAction>,
+    hovered_modal_color: Option<usize>,
     hovered_canvas_cell: Option<(u16, u16)>,
     undo_stack: Vec<Stroke>,
     redo_stack: Vec<Stroke>,
@@ -417,15 +589,29 @@ impl AppState {
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
             color_palette_area: Rect::default(),
+            recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            more_colors_button_area: Rect::default(),
+            rgb_button_area: Rect::default(),
+            welcome_action_areas: Vec::new(),
             top_action_areas: Vec::new(),
             modal_tool_areas: Vec::new(),
+            modal_action_areas: Vec::new(),
+            modal_color_areas: Vec::new(),
             modal_area: Rect::default(),
+            recent_extra_colors: Vec::new(),
+            color_picker_scroll_row: 0,
             hovered_palette: None,
+            hovered_recent_color: None,
+            hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
             hovered_brush_button: false,
+            hovered_more_colors_button: false,
+            hovered_rgb_button: false,
             hovered_modal_tool: None,
+            hovered_modal_action: None,
+            hovered_modal_color: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -454,15 +640,29 @@ impl AppState {
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
             color_palette_area: Rect::default(),
+            recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            more_colors_button_area: Rect::default(),
+            rgb_button_area: Rect::default(),
+            welcome_action_areas: Vec::new(),
             top_action_areas: Vec::new(),
             modal_tool_areas: Vec::new(),
+            modal_action_areas: Vec::new(),
+            modal_color_areas: Vec::new(),
             modal_area: Rect::default(),
+            recent_extra_colors: Vec::new(),
+            color_picker_scroll_row: 0,
             hovered_palette: None,
+            hovered_recent_color: None,
+            hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
             hovered_brush_button: false,
+            hovered_more_colors_button: false,
+            hovered_rgb_button: false,
             hovered_modal_tool: None,
+            hovered_modal_action: None,
+            hovered_modal_color: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -569,6 +769,12 @@ impl AppState {
                     .unwrap_or_else(|| "transparent".to_string());
                 self.modal = Some(Modal::SetBg { input: bg });
             }
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                self.open_color_picker();
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                self.open_rgb_input();
+            }
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.open_export_text();
             }
@@ -581,6 +787,19 @@ impl AppState {
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) {
+        if matches!(self.modal, Some(Modal::ColorPicker)) {
+            match key.code {
+                KeyCode::Esc => {
+                    self.close_modal("Color picker closed");
+                }
+                KeyCode::PageDown | KeyCode::Down => self.scroll_color_picker(1),
+                KeyCode::PageUp | KeyCode::Up => self.scroll_color_picker(-1),
+                KeyCode::Char('u') | KeyCode::Char('U') => self.open_rgb_input(),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.modal, Some(Modal::ToolMenu)) {
             match key.code {
                 KeyCode::Esc => {
@@ -790,6 +1009,16 @@ impl AppState {
                     self.modal = Some(Modal::SetBg { input });
                 }
             }
+            Modal::RgbInput { input } => match parse_rgb_input(&input) {
+                Some(color) => {
+                    self.select_custom_color(color, false);
+                    self.message = format!("Selected RGB {}", color.to_hex());
+                }
+                None => {
+                    self.message = "Enter RGB as 255,128,0 or #FF8000".to_string();
+                    self.modal = Some(Modal::RgbInput { input });
+                }
+            },
             Modal::ExportText { input } => {
                 let path = PathBuf::from(input.trim());
                 if path.as_os_str().is_empty() {
@@ -803,12 +1032,22 @@ impl AppState {
                     Err(error) => self.message = format!("Export failed: {error}"),
                 }
             }
+            Modal::ColorPicker => {}
             Modal::ToolMenu => {}
             Modal::QuitConfirm => {}
         }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.screen == Screen::Welcome {
+            if self.modal.is_some() {
+                self.handle_modal_mouse(mouse);
+            } else {
+                self.handle_welcome_mouse(mouse);
+            }
+            return;
+        }
+
         if self.screen != Screen::Editor {
             return;
         }
@@ -838,6 +1077,14 @@ impl AppState {
                     });
                     return;
                 }
+                if rect_contains(self.more_colors_button_area, mouse.column, mouse.row) {
+                    self.open_color_picker();
+                    return;
+                }
+                if rect_contains(self.rgb_button_area, mouse.column, mouse.row) {
+                    self.open_rgb_input();
+                    return;
+                }
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
                 }
@@ -855,19 +1102,58 @@ impl AppState {
         }
     }
 
+    fn handle_welcome_mouse(&mut self, mouse: MouseEvent) {
+        self.update_welcome_hover(mouse.column, mouse.row);
+
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(action) = self.hovered_welcome_action
+        {
+            self.run_welcome_action(action);
+        }
+    }
+
     fn handle_modal_mouse(&mut self, mouse: MouseEvent) {
-        if !matches!(self.modal, Some(Modal::ToolMenu)) {
+        if matches!(self.modal, Some(Modal::ColorPicker)) {
+            self.hovered_modal_color = self.modal_color_at(mouse.column, mouse.row);
+            self.hovered_modal_action = self.modal_action_at(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.scroll_color_picker(1),
+                MouseEventKind::ScrollUp => self.scroll_color_picker(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) = self.hovered_modal_color {
+                        let color = color_cube_color(index);
+                        self.select_custom_color(color, true);
+                        self.close_modal(format!("Selected {}", color.to_hex()));
+                    } else if let Some(action) = self.modal_action_at(mouse.column, mouse.row) {
+                        self.run_modal_action(action);
+                    } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                        self.close_modal("Color picker closed");
+                    }
+                }
+                _ => {}
+            }
             return;
         }
 
-        self.hovered_modal_tool = self.modal_tool_at(mouse.column, mouse.row);
+        if matches!(self.modal, Some(Modal::ToolMenu)) {
+            self.hovered_modal_tool = self.modal_tool_at(mouse.column, mouse.row);
 
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                if let Some(tool) = self.hovered_modal_tool {
+                    self.select_tool_from_menu(tool);
+                } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                    self.close_modal("Tool menu closed");
+                }
+            }
+            return;
+        }
+
+        self.hovered_modal_action = self.modal_action_at(mouse.column, mouse.row);
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if let Some(tool) = self.hovered_modal_tool {
-                self.select_tool_from_menu(tool);
+            if let Some(action) = self.hovered_modal_action {
+                self.run_modal_action(action);
             } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
-                self.modal = None;
-                self.message = "Tool menu closed".to_string();
+                self.close_modal("Canceled");
             }
         }
     }
@@ -876,9 +1162,13 @@ impl AppState {
         self.hovered_top_action = self.top_action_at(column, row);
         self.hovered_tool_button = rect_contains(self.tool_button_area, column, row);
         self.hovered_brush_button = rect_contains(self.brush_button_area, column, row);
+        self.hovered_more_colors_button = rect_contains(self.more_colors_button_area, column, row);
+        self.hovered_rgb_button = rect_contains(self.rgb_button_area, column, row);
         self.hovered_canvas_cell = if self.hovered_top_action.is_none()
             && !self.hovered_tool_button
             && !self.hovered_brush_button
+            && !self.hovered_more_colors_button
+            && !self.hovered_rgb_button
         {
             self.canvas_cell_at(column, row).map(|(x, y)| (y, x))
         } else {
@@ -903,6 +1193,22 @@ impl AppState {
             )
             .map(PaletteHover::Character)
         };
+
+        self.hovered_recent_color = hit_palette_item(
+            self.recent_color_palette_area,
+            COLOR_SLOT_WIDTH,
+            column,
+            row,
+            self.recent_extra_colors.len(),
+        );
+    }
+
+    fn update_welcome_hover(&mut self, column: u16, row: u16) {
+        self.hovered_welcome_action = self
+            .welcome_action_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action);
     }
 
     fn top_action_at(&self, column: u16, row: u16) -> Option<TopAction> {
@@ -914,6 +1220,20 @@ impl AppState {
 
     fn modal_tool_at(&self, column: u16, row: u16) -> Option<Tool> {
         self.modal_tool_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn modal_action_at(&self, column: u16, row: u16) -> Option<ModalAction> {
+        self.modal_action_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn modal_color_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.modal_color_areas
             .iter()
             .find(|hit| rect_contains(hit.area, column, row))
             .map(|hit| hit.action)
@@ -942,6 +1262,19 @@ impl AppState {
         }
 
         if let Some(index) = hit_palette_item(
+            self.recent_color_palette_area,
+            COLOR_SLOT_WIDTH,
+            column,
+            row,
+            self.recent_extra_colors.len(),
+        ) {
+            let color = self.recent_extra_colors[index];
+            self.select_custom_color(color, false);
+            self.message = format!("Selected recent {}", color.to_hex());
+            return true;
+        }
+
+        if let Some(index) = hit_palette_item(
             self.character_palette_area,
             CHAR_SLOT_WIDTH,
             column,
@@ -958,40 +1291,66 @@ impl AppState {
     }
 
     fn select_palette_color(&mut self, palette_color: PaletteColor) {
+        self.select_color(
+            palette_color.color,
+            palette_color.name,
+            palette_color.id_base,
+            false,
+        );
+    }
+
+    fn select_custom_color(&mut self, color: Color, add_recent: bool) {
+        let hex = color.to_hex();
+        self.select_color(color, &hex, &style_id_base_for_color(color), add_recent);
+    }
+
+    fn select_color(&mut self, color: Color, label: &str, id_base: &str, add_recent: bool) {
         self.tool = Tool::Pencil;
 
-        if let Some(index) = self.project.styles.iter().position(|style| {
-            style.fg == palette_color.color && style.bg.is_none() && style.attrs.is_empty()
-        }) {
+        if let Some(index) = self
+            .project
+            .styles
+            .iter()
+            .position(|style| style.fg == color && style.bg.is_none() && style.attrs.is_empty())
+        {
             self.current_style = index;
-            self.message = format!(
-                "Selected {} ({})",
-                palette_color.name,
-                palette_color.color.to_hex()
-            );
+            if add_recent {
+                self.add_recent_extra_color(color);
+            }
+            self.message = format!("Selected {label} ({})", color.to_hex());
             return;
         }
 
         if self.project.styles.len() >= MAX_STYLES {
-            self.message = format!("Cannot add {}: style limit reached", palette_color.name);
+            self.message = format!("Cannot add {label}: style limit reached");
             return;
         }
 
-        let id = unique_style_id(&self.project, palette_color.id_base);
+        let id = unique_style_id(&self.project, id_base);
         self.project.styles.push(TerminalStyle {
             id,
-            fg: palette_color.color,
+            fg: color,
             bg: None,
             attrs: Vec::new(),
             role: Some("palette".to_string()),
         });
         self.current_style = self.project.styles.len() - 1;
         self.dirty = true;
-        self.message = format!(
-            "Selected {} ({})",
-            palette_color.name,
-            palette_color.color.to_hex()
-        );
+        if add_recent {
+            self.add_recent_extra_color(color);
+        }
+        self.message = format!("Selected {label} ({})", color.to_hex());
+    }
+
+    fn add_recent_extra_color(&mut self, color: Color) {
+        if is_visible_palette_color(color) {
+            return;
+        }
+
+        self.recent_extra_colors
+            .retain(|recent_color| *recent_color != color);
+        self.recent_extra_colors.insert(0, color);
+        self.recent_extra_colors.truncate(MAX_RECENT_COLORS);
     }
 
     fn apply_tool_at_screen(&mut self, column: u16, row: u16) {
@@ -1135,6 +1494,102 @@ impl AppState {
         }
     }
 
+    fn run_welcome_action(&mut self, action: WelcomeAction) {
+        match action {
+            WelcomeAction::NewImage => {
+                self.modal = Some(Modal::NewImage {
+                    input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
+                    target_path: None,
+                });
+            }
+            WelcomeAction::OpenFile => {
+                self.modal = Some(Modal::OpenFile {
+                    input: String::new(),
+                });
+            }
+            WelcomeAction::Quit => self.should_quit = true,
+        }
+    }
+
+    fn run_modal_action(&mut self, action: ModalAction) {
+        match action {
+            ModalAction::Confirm => {
+                if let Some(modal) = self.modal.take() {
+                    self.commit_modal(modal);
+                }
+            }
+            ModalAction::Cancel => self.close_modal("Canceled"),
+            ModalAction::RgbInput => self.open_rgb_input(),
+            ModalAction::SaveAndQuit => {
+                self.save();
+                if !self.dirty {
+                    self.should_quit = true;
+                }
+            }
+            ModalAction::Discard => {
+                self.should_quit = true;
+            }
+        }
+    }
+
+    fn close_modal(&mut self, message: impl Into<String>) {
+        self.modal = None;
+        self.hovered_modal_action = None;
+        self.hovered_modal_tool = None;
+        self.hovered_modal_color = None;
+        self.message = message.into();
+    }
+
+    fn open_color_picker(&mut self) {
+        self.modal = Some(Modal::ColorPicker);
+        self.color_picker_scroll_row = 0;
+        self.hovered_modal_color = None;
+        self.message = "Choose a color".to_string();
+    }
+
+    fn open_rgb_input(&mut self) {
+        let color = self.project.styles[self.current_style].fg;
+        self.modal = Some(Modal::RgbInput {
+            input: format!("{},{},{}", color.r, color.g, color.b),
+        });
+        self.message = "Enter RGB as 255,128,0".to_string();
+    }
+
+    fn scroll_color_picker(&mut self, delta_rows: isize) {
+        let columns = self.color_picker_columns().max(1);
+        let visible_rows = self.color_picker_visible_rows().max(1);
+        let total_rows = MORE_COLOR_COUNT.div_ceil(usize::from(columns));
+        let max_scroll = total_rows.saturating_sub(usize::from(visible_rows));
+        let current = self.color_picker_scroll_row;
+
+        self.color_picker_scroll_row = if delta_rows.is_negative() {
+            current.saturating_sub(delta_rows.unsigned_abs())
+        } else {
+            current.saturating_add(delta_rows as usize).min(max_scroll)
+        };
+    }
+
+    fn color_picker_columns(&self) -> u16 {
+        palette_columns(self.color_picker_grid_area().width, COLOR_SLOT_WIDTH)
+    }
+
+    fn color_picker_visible_rows(&self) -> u16 {
+        self.color_picker_grid_area().height
+    }
+
+    fn color_picker_grid_area(&self) -> Rect {
+        if self.modal_area.width < 4 || self.modal_area.height < 7 {
+            return Rect::default();
+        }
+
+        Rect {
+            x: self.modal_area.x + 2,
+            y: self.modal_area.y + 3,
+            width: self.modal_area.width.saturating_sub(4),
+            height: self.modal_area.height.saturating_sub(6),
+        }
+    }
+
     fn open_export_text(&mut self) {
         let default = self
             .file_path
@@ -1231,27 +1686,63 @@ fn draw(frame: &mut Frame<'_>, app: &mut AppState) {
     }
 }
 
-fn draw_welcome(frame: &mut Frame<'_>, app: &AppState) {
+fn draw_welcome(frame: &mut Frame<'_>, app: &mut AppState) {
     let area = frame.area();
     let block = Block::default()
         .title("Terminal Animator")
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.welcome_action_areas.clear();
 
-    let lines = vec![
-        Line::from("Terminal Animator Phase 1"),
-        Line::from(""),
-        Line::from("N  New image"),
-        Line::from("O  Open file"),
-        Line::from("Q  Quit"),
-        Line::from(""),
-        Line::from(app.message.as_str()),
-    ];
-    let paragraph = Paragraph::new(lines)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    let start_y = inner.y + inner.height.saturating_sub(10) / 2;
+    draw_text_centered(
+        frame,
+        inner,
+        start_y,
+        "Terminal Animator Phase 1",
+        TuiStyle::default().add_modifier(Modifier::BOLD),
+    );
+    draw_text_centered(
+        frame,
+        inner,
+        start_y.saturating_add(1),
+        "Create or open a .tanim.toml file",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let mut y = start_y.saturating_add(3);
+    for action in WELCOME_ACTIONS {
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        let width = 20.min(inner.width);
+        let x = inner.x + inner.width.saturating_sub(width) / 2;
+        let button_area = Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        };
+        let hovered = app.hovered_welcome_action == Some(*action);
+        let style = choice_style(false, hovered);
+        fill_rect(frame, button_area, style);
+        draw_text_centered(frame, button_area, y, action.label(), style);
+        app.welcome_action_areas.push(ButtonHit {
+            action: *action,
+            area: button_area,
+        });
+        y = y.saturating_add(2);
+    }
+
+    draw_text_centered(
+        frame,
+        inner,
+        y.saturating_add(1),
+        app.message.as_str(),
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
 }
 
 fn draw_editor(frame: &mut Frame<'_>, app: &mut AppState) {
@@ -1362,7 +1853,10 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     app.tool_button_area = Rect::default();
     app.brush_button_area = Rect::default();
     app.color_palette_area = Rect::default();
+    app.recent_color_palette_area = Rect::default();
     app.character_palette_area = Rect::default();
+    app.more_colors_button_area = Rect::default();
+    app.rgb_button_area = Rect::default();
 
     let mut y = inner.y;
     let max_y = inner.y.saturating_add(inner.height);
@@ -1436,6 +1930,49 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         y = y.saturating_add(color_height);
     }
 
+    if !app.recent_extra_colors.is_empty() {
+        draw_sidebar_spacer(&mut y, max_y);
+        draw_sidebar_line(frame, inner, &mut y, max_y, "Recents".to_string(), strong);
+        if y < max_y {
+            let recent_columns = palette_columns(inner.width, COLOR_SLOT_WIDTH);
+            let recent_rows = palette_rows(app.recent_extra_colors.len(), recent_columns);
+            let recent_height = recent_rows.min(max_y - y).min(3);
+            app.recent_color_palette_area = Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: recent_height,
+            };
+            draw_color_grid(
+                frame,
+                app.recent_color_palette_area,
+                style.fg,
+                app.hovered_recent_color,
+                app.recent_extra_colors.len(),
+                |index| app.recent_extra_colors[index],
+            );
+            y = y.saturating_add(recent_height);
+        }
+    }
+
+    draw_sidebar_spacer(&mut y, max_y);
+    app.more_colors_button_area = draw_sidebar_control_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "More colors...".to_string(),
+        app.hovered_more_colors_button,
+    );
+    app.rgb_button_area = draw_sidebar_control_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "RGB input...".to_string(),
+        app.hovered_rgb_button,
+    );
+
     draw_sidebar_spacer(&mut y, max_y);
     draw_sidebar_line(
         frame,
@@ -1482,7 +2019,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         inner,
         &mut y,
         max_y,
-        "F/G edit current style".to_string(),
+        "M more | U RGB | F/G edit".to_string(),
         normal,
     );
 }
@@ -1552,24 +2089,39 @@ fn draw_color_palette(
     selected_color: Color,
     hovered_index: Option<usize>,
 ) {
+    draw_color_grid(
+        frame,
+        area,
+        selected_color,
+        hovered_index,
+        COLOR_PALETTE.len(),
+        |index| COLOR_PALETTE[index].color,
+    );
+}
+
+fn draw_color_grid(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    selected_color: Color,
+    hovered_index: Option<usize>,
+    color_count: usize,
+    mut color_at: impl FnMut(usize) -> Color,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
     let columns = palette_columns(area.width, COLOR_SLOT_WIDTH);
 
-    for (index, palette_color) in COLOR_PALETTE.iter().enumerate() {
+    for index in 0..color_count {
         let Some((x, y)) = palette_position(area, columns, COLOR_SLOT_WIDTH, index) else {
             break;
         };
+        let color = color_at(index);
 
-        let style = TuiStyle::default().bg(TuiColor::Rgb(
-            palette_color.color.r,
-            palette_color.color.g,
-            palette_color.color.b,
-        ));
+        let style = TuiStyle::default().bg(TuiColor::Rgb(color.r, color.g, color.b));
 
-        let selected = palette_color.color == selected_color;
+        let selected = color == selected_color;
         let hovered = hovered_index == Some(index);
         let indicator_style = if selected && hovered {
             TuiStyle::default()
@@ -1770,6 +2322,59 @@ fn draw_text(frame: &mut Frame<'_>, x: u16, y: u16, width: u16, text: &str, styl
     }
 }
 
+fn draw_text_centered(frame: &mut Frame<'_>, area: Rect, y: u16, text: &str, style: TuiStyle) {
+    if y < area.y || y >= area.y + area.height {
+        return;
+    }
+
+    let text_width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+    let x = area.x + area.width.saturating_sub(text_width.min(area.width)) / 2;
+    draw_text(
+        frame,
+        x,
+        y,
+        area.width.saturating_sub(x - area.x),
+        text,
+        style,
+    );
+}
+
+fn color_cube_color(index: usize) -> Color {
+    let steps = [0, 51, 102, 153, 204, 255];
+    let index = index.min(MORE_COLOR_COUNT - 1);
+    let r = steps[(index / 36) % 6];
+    let g = steps[(index / 6) % 6];
+    let b = steps[index % 6];
+    Color { r, g, b }
+}
+
+fn is_visible_palette_color(color: Color) -> bool {
+    COLOR_PALETTE
+        .iter()
+        .any(|palette_color| palette_color.color == color)
+}
+
+fn style_id_base_for_color(color: Color) -> String {
+    format!("color-{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+}
+
+fn parse_rgb_input(input: &str) -> Option<Color> {
+    let trimmed = input.trim();
+    if trimmed.starts_with('#') {
+        return Color::parse_hex(trimmed);
+    }
+
+    let parts = trimmed
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
+        .filter(|part| !part.is_empty())
+        .map(str::parse::<u8>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    let [r, g, b]: [u8; 3] = parts.try_into().ok()?;
+    Some(Color { r, g, b })
+}
+
 fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let block = Block::default().title("Canvas").borders(Borders::ALL);
     let inner = block.inner(area);
@@ -1867,15 +2472,23 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     };
 
     app.modal_tool_areas.clear();
+    app.modal_action_areas.clear();
+    app.modal_color_areas.clear();
 
     if matches!(modal, Modal::ToolMenu) {
         draw_tool_menu(frame, app);
         return;
     }
 
-    let area = centered_rect(72, 7, frame.area());
+    if matches!(modal, Modal::ColorPicker) {
+        draw_color_picker(frame, app);
+        return;
+    }
+
+    let area = centered_rect(72, 9, frame.area());
     app.modal_area = area;
     frame.render_widget(Clear, area);
+    let is_quit_confirm = matches!(modal, Modal::QuitConfirm);
 
     let (title, body) = match modal {
         Modal::NewImage { input, .. } => ("New Image", format!("Dimensions: {input}")),
@@ -1886,11 +2499,13 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::RenameStyle { input } => ("Rename Style", format!("Style ID: {input}")),
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
+        Modal::RgbInput { input } => ("RGB Input", format!("RGB or hex: {input}")),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
+        Modal::ColorPicker => unreachable!("color picker is drawn separately"),
         Modal::ToolMenu => unreachable!("tool menu is drawn separately"),
         Modal::QuitConfirm => (
             "Unsaved Changes",
-            "S save and quit, D discard, C cancel".to_string(),
+            "Save changes before closing?".to_string(),
         ),
     };
 
@@ -1902,6 +2517,130 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     .block(Block::default().title(title).borders(Borders::ALL))
     .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+
+    let actions: &[ModalAction] = if is_quit_confirm {
+        &[
+            ModalAction::SaveAndQuit,
+            ModalAction::Discard,
+            ModalAction::Cancel,
+        ]
+    } else {
+        &[ModalAction::Confirm, ModalAction::Cancel]
+    };
+    draw_modal_buttons(frame, app, area, actions);
+}
+
+fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
+    let area = centered_rect(76, 24, frame.area());
+    app.modal_area = area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default().title("More Colors").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        inner.width,
+        "Click a color. Wheel/PageUp/PageDown scroll. U opens RGB input.",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let grid_area = app.color_picker_grid_area();
+    let columns = palette_columns(grid_area.width, COLOR_SLOT_WIDTH).max(1);
+    let visible_rows = grid_area.height;
+    let start_index = app.color_picker_scroll_row * usize::from(columns);
+    let visible_count = usize::from(columns) * usize::from(visible_rows);
+    let selected_color = app.project.styles[app.current_style].fg;
+    let hovered_visible_index = app
+        .hovered_modal_color
+        .and_then(|index| index.checked_sub(start_index))
+        .filter(|index| *index < visible_count);
+
+    draw_color_grid(
+        frame,
+        grid_area,
+        selected_color,
+        hovered_visible_index,
+        visible_count.min(MORE_COLOR_COUNT.saturating_sub(start_index)),
+        |offset| color_cube_color(start_index + offset),
+    );
+
+    for offset in 0..visible_count.min(MORE_COLOR_COUNT.saturating_sub(start_index)) {
+        let Some((x, y)) = palette_position(grid_area, columns, COLOR_SLOT_WIDTH, offset) else {
+            break;
+        };
+        app.modal_color_areas.push(ButtonHit {
+            action: start_index + offset,
+            area: Rect {
+                x,
+                y,
+                width: COLOR_SLOT_WIDTH.min(grid_area.x + grid_area.width - x),
+                height: 1,
+            },
+        });
+    }
+
+    let total_rows = MORE_COLOR_COUNT.div_ceil(usize::from(columns));
+    let scroll = format!(
+        "Rows {}/{}",
+        app.color_picker_scroll_row + 1,
+        total_rows.max(1)
+    );
+    draw_text(
+        frame,
+        inner.x,
+        inner.y + inner.height.saturating_sub(2),
+        inner.width,
+        &scroll,
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+
+    draw_modal_buttons(
+        frame,
+        app,
+        area,
+        &[ModalAction::RgbInput, ModalAction::Cancel],
+    );
+}
+
+fn draw_modal_buttons(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    modal_area: Rect,
+    actions: &[ModalAction],
+) {
+    if actions.is_empty() || modal_area.width < 4 || modal_area.height < 3 {
+        return;
+    }
+
+    let total_width: u16 = actions
+        .iter()
+        .map(|action| u16::try_from(action.label().chars().count()).unwrap_or(0) + 4)
+        .sum::<u16>()
+        .saturating_add(u16::try_from(actions.len().saturating_sub(1)).unwrap_or(0));
+    let mut x = modal_area.x + modal_area.width.saturating_sub(total_width) / 2;
+    let y = modal_area.y + modal_area.height.saturating_sub(2);
+
+    for action in actions {
+        let width = u16::try_from(action.label().chars().count()).unwrap_or(0) + 4;
+        let area = Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        };
+        let style = choice_style(false, app.hovered_modal_action == Some(*action));
+        fill_rect(frame, area, style);
+        draw_text_centered(frame, area, y, action.label(), style);
+        app.modal_action_areas.push(ButtonHit {
+            action: *action,
+            area,
+        });
+        x = x.saturating_add(width + 1);
+    }
 }
 
 fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
@@ -1990,8 +2729,9 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::RenameStyle { input }
         | Modal::SetFg { input }
         | Modal::SetBg { input }
+        | Modal::RgbInput { input }
         | Modal::ExportText { input } => Some(input),
-        Modal::ToolMenu | Modal::QuitConfirm => None,
+        Modal::ColorPicker | Modal::ToolMenu | Modal::QuitConfirm => None,
     }
 }
 
@@ -2114,6 +2854,11 @@ mod tests {
     }
 
     #[test]
+    fn visible_color_palette_has_been_expanded() {
+        assert!(COLOR_PALETTE.len() >= 24);
+    }
+
+    #[test]
     fn selecting_palette_color_creates_new_tool_style_without_recoloring_cells() {
         let mut app = AppState::editor(Project::new_image("palette", 4, 2), None, false, "");
         app.project.first_frame_mut().cells.insert(
@@ -2226,5 +2971,63 @@ mod tests {
         assert_eq!(app.tool, Tool::Eraser);
         assert!(app.modal.is_none());
         assert_eq!(app.message, "Eraser selected");
+    }
+
+    #[test]
+    fn rgb_input_accepts_comma_space_and_hex_forms() {
+        assert_eq!(
+            parse_rgb_input("255,128,0"),
+            Some(Color {
+                r: 255,
+                g: 128,
+                b: 0
+            })
+        );
+        assert_eq!(
+            parse_rgb_input("12 34 56"),
+            Some(Color {
+                r: 12,
+                g: 34,
+                b: 56
+            })
+        );
+        assert_eq!(
+            parse_rgb_input("#0A0B0C"),
+            Some(Color {
+                r: 10,
+                g: 11,
+                b: 12
+            })
+        );
+        assert_eq!(parse_rgb_input("255,0"), None);
+    }
+
+    #[test]
+    fn selecting_hidden_picker_color_adds_recent() {
+        let mut app = AppState::editor(Project::new_image("recent", 4, 2), None, false, "");
+        let color = Color {
+            r: 51,
+            g: 102,
+            b: 153,
+        };
+        assert!(!is_visible_palette_color(color));
+
+        app.select_custom_color(color, true);
+        app.select_custom_color(color, true);
+
+        assert_eq!(app.recent_extra_colors, vec![color]);
+        assert_eq!(app.project.styles[app.current_style].fg, color);
+    }
+
+    #[test]
+    fn welcome_actions_open_expected_flows() {
+        let mut app = AppState::welcome("");
+
+        app.run_welcome_action(WelcomeAction::NewImage);
+        assert!(matches!(app.modal, Some(Modal::NewImage { .. })));
+
+        app.close_modal("");
+        app.run_welcome_action(WelcomeAction::OpenFile);
+        assert!(matches!(app.modal, Some(Modal::OpenFile { .. })));
     }
 }
