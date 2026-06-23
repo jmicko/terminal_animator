@@ -443,6 +443,8 @@ enum ModalAction {
     Confirm,
     Cancel,
     RgbInput,
+    ExportText,
+    ExportAnsi,
     SaveAndQuit,
     Discard,
 }
@@ -453,6 +455,8 @@ impl ModalAction {
             Self::Confirm => "OK",
             Self::Cancel => "Cancel",
             Self::RgbInput => "RGB",
+            Self::ExportText => "Text",
+            Self::ExportAnsi => "ANSI",
             Self::SaveAndQuit => "Save",
             Self::Discard => "Discard",
         }
@@ -547,7 +551,11 @@ enum Modal {
     ExportText {
         input: String,
     },
+    ExportAnsi {
+        input: String,
+    },
     ColorPicker,
+    ExportMenu,
     ToolMenu,
     QuitConfirm,
 }
@@ -990,6 +998,16 @@ impl AppState {
             return;
         }
 
+        if matches!(self.modal, Some(Modal::ExportMenu)) {
+            match key.code {
+                KeyCode::Esc => self.close_modal("Export canceled"),
+                KeyCode::Char('t') | KeyCode::Char('T') => self.open_export_text(),
+                KeyCode::Char('a') | KeyCode::Char('A') => self.open_export_ansi(),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(self.modal, Some(Modal::QuitConfirm)) {
             match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -1225,7 +1243,21 @@ impl AppState {
                     Err(error) => self.message = format!("Export failed: {error}"),
                 }
             }
+            Modal::ExportAnsi { input } => {
+                let path = PathBuf::from(input.trim());
+                if path.as_os_str().is_empty() {
+                    self.message = "Export path cannot be empty".to_string();
+                    self.modal = Some(Modal::ExportAnsi { input });
+                    return;
+                }
+
+                match fs::write(&path, export_ansi(&self.project, self.current_frame_index)) {
+                    Ok(()) => self.message = format!("Exported ANSI {}", path.display()),
+                    Err(error) => self.message = format!("Export failed: {error}"),
+                }
+            }
             Modal::ColorPicker => {}
+            Modal::ExportMenu => {}
             Modal::ToolMenu => {}
             Modal::QuitConfirm => {}
         }
@@ -1988,7 +2020,7 @@ impl AppState {
             TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
             TopAction::Save => self.save(),
             TopAction::SaveAs => self.open_save_as(),
-            TopAction::ExportText => self.open_export_text(),
+            TopAction::ExportText => self.open_export_menu(),
             TopAction::Quit => self.request_quit(),
         }
     }
@@ -2025,6 +2057,8 @@ impl AppState {
             }
             ModalAction::Cancel => self.close_modal("Canceled"),
             ModalAction::RgbInput => self.open_rgb_input(),
+            ModalAction::ExportText => self.open_export_text(),
+            ModalAction::ExportAnsi => self.open_export_ansi(),
             ModalAction::SaveAndQuit => {
                 self.save();
                 if !self.dirty {
@@ -2107,6 +2141,11 @@ impl AppState {
         }
     }
 
+    fn open_export_menu(&mut self) {
+        self.modal = Some(Modal::ExportMenu);
+        self.message = "Choose export format".to_string();
+    }
+
     fn open_export_text(&mut self) {
         let default = self
             .file_path
@@ -2114,6 +2153,17 @@ impl AppState {
             .map(|path| default_text_export_path(path.as_path()))
             .unwrap_or_else(|| PathBuf::from("terminal-art.txt"));
         self.modal = Some(Modal::ExportText {
+            input: default.display().to_string(),
+        });
+    }
+
+    fn open_export_ansi(&mut self) {
+        let default = self
+            .file_path
+            .as_ref()
+            .map(|path| default_ansi_export_path(path.as_path()))
+            .unwrap_or_else(|| PathBuf::from("terminal-art.ansi"));
+        self.modal = Some(Modal::ExportAnsi {
             input: default.display().to_string(),
         });
     }
@@ -3215,6 +3265,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     app.modal_area = area;
     frame.render_widget(Clear, area);
     let is_quit_confirm = matches!(modal, Modal::QuitConfirm);
+    let is_export_menu = matches!(modal, Modal::ExportMenu);
 
     let (title, body) = match modal {
         Modal::NewImage { input, .. } => ("New Image", format!("Dimensions: {input}")),
@@ -3231,8 +3282,10 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
+        Modal::ExportAnsi { input } => ("Export ANSI", format!("Path: {input}")),
         Modal::ColorPicker => unreachable!("color picker is drawn separately"),
         Modal::RgbInput { .. } => unreachable!("RGB picker is drawn separately"),
+        Modal::ExportMenu => ("Export", "Choose an export format".to_string()),
         Modal::ToolMenu => unreachable!("tool menu is drawn separately"),
         Modal::QuitConfirm => (
             "Unsaved Changes",
@@ -3253,6 +3306,12 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         &[
             ModalAction::SaveAndQuit,
             ModalAction::Discard,
+            ModalAction::Cancel,
+        ]
+    } else if is_export_menu {
+        &[
+            ModalAction::ExportText,
+            ModalAction::ExportAnsi,
             ModalAction::Cancel,
         ]
     } else {
@@ -3770,10 +3829,12 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::RenameStyle { input }
         | Modal::SetFg { input }
         | Modal::SetBg { input }
-        | Modal::ExportText { input } => Some(input),
+        | Modal::ExportText { input }
+        | Modal::ExportAnsi { input } => Some(input),
         Modal::OverwriteConfirm { .. }
         | Modal::RgbInput { .. }
         | Modal::ColorPicker
+        | Modal::ExportMenu
         | Modal::ToolMenu
         | Modal::QuitConfirm => None,
     }
@@ -3853,6 +3914,12 @@ fn asset_name_from_path(path: &Path) -> String {
 fn default_text_export_path(path: &Path) -> PathBuf {
     let mut export_path = path.to_path_buf();
     export_path.set_extension("txt");
+    export_path
+}
+
+fn default_ansi_export_path(path: &Path) -> PathBuf {
+    let mut export_path = path.to_path_buf();
+    export_path.set_extension("ansi");
     export_path
 }
 
@@ -4338,6 +4405,40 @@ mod tests {
                 .expect("read saved")
                 .contains("schema_version = 1")
         );
+    }
+
+    #[test]
+    fn export_top_action_opens_export_menu() {
+        let mut app = AppState::editor(Project::new_image("export", 4, 2), None, false, "");
+
+        app.run_top_action(TopAction::ExportText);
+        assert!(matches!(app.modal, Some(Modal::ExportMenu)));
+
+        app.run_modal_action(ModalAction::ExportAnsi);
+        assert!(matches!(app.modal, Some(Modal::ExportAnsi { .. })));
+    }
+
+    #[test]
+    fn ansi_modal_exports_current_frame() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("current.ansi");
+        let mut app = AppState::editor(Project::new_image("export", 2, 1), None, false, "");
+        app.insert_blank_frame();
+        app.set_cell_for_stroke(
+            0,
+            0,
+            Some(PaintedCell {
+                ch: 'Z',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+
+        app.commit_modal(Modal::ExportAnsi {
+            input: path.display().to_string(),
+        });
+
+        assert!(fs::read_to_string(path).expect("read ansi").contains('Z'));
     }
 
     #[test]
