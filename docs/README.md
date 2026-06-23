@@ -28,6 +28,19 @@ rewriting the art in Rust.
 - Schema version 1 is the file-format contract; implementation phases are
   separate milestones and should start narrower than the full format.
 
+## Current Implementation Highlights
+
+- Mouse-first editor with pencil, eraser, eyedropper, and flood fill tools.
+- Clickable color, character, style attribute, expanded palette, and RGB mixer
+  controls.
+- Still image and basic animation editing with frame navigation, duplicate,
+  blank frame, and previous-frame onion skin.
+- Save/load for canonical `.tanim.toml` files with save-as overwrite
+  confirmation.
+- Plain text and ANSI export from the interactive app and CLI:
+  `terminal_animator --export text input.tanim.toml output.txt`
+  or `terminal_animator --export ansi input.tanim.toml output.ansi`.
+
 ## Compatibility Contract
 
 The file-format details above are intentional integration points. Do not change

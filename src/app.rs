@@ -2267,7 +2267,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &mut AppState) {
         frame,
         inner,
         start_y,
-        "Terminal Animator Phase 1",
+        "Terminal Animator",
         TuiStyle::default().add_modifier(Modifier::BOLD),
     );
     draw_text_centered(
