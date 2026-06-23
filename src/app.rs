@@ -36,6 +36,13 @@ const EXPANDED_TONE_COUNT: usize = 16;
 const EXPANDED_NEUTRAL_COUNT: usize = 36;
 const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT + EXPANDED_NEUTRAL_COUNT;
 const MAX_RECENT_COLORS: usize = 24;
+const ATTR_CHOICES: &[TextAttr] = &[
+    TextAttr::Bold,
+    TextAttr::Dim,
+    TextAttr::Italic,
+    TextAttr::Underline,
+    TextAttr::Reverse,
+];
 
 #[derive(Debug, Clone, Copy)]
 struct PaletteColor {
@@ -582,6 +589,7 @@ struct AppState {
     color_palette_area: Rect,
     recent_color_palette_area: Rect,
     character_palette_area: Rect,
+    attr_button_areas: Vec<ButtonHit<TextAttr>>,
     more_colors_button_area: Rect,
     rgb_button_area: Rect,
     welcome_action_areas: Vec<ButtonHit<WelcomeAction>>,
@@ -595,6 +603,7 @@ struct AppState {
     color_picker_scroll_row: usize,
     hovered_palette: Option<PaletteHover>,
     hovered_recent_color: Option<usize>,
+    hovered_attr: Option<TextAttr>,
     hovered_welcome_action: Option<WelcomeAction>,
     hovered_top_action: Option<TopAction>,
     hovered_tool_button: bool,
@@ -676,6 +685,7 @@ impl AppState {
             color_palette_area: Rect::default(),
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            attr_button_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
@@ -689,6 +699,7 @@ impl AppState {
             color_picker_scroll_row: 0,
             hovered_palette: None,
             hovered_recent_color: None,
+            hovered_attr: None,
             hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
@@ -732,6 +743,7 @@ impl AppState {
             color_palette_area: Rect::default(),
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            attr_button_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
@@ -745,6 +757,7 @@ impl AppState {
             color_picker_scroll_row: 0,
             hovered_palette: None,
             hovered_recent_color: None,
+            hovered_attr: None,
             hovered_welcome_action: None,
             hovered_top_action: None,
             hovered_tool_button: false,
@@ -1360,11 +1373,13 @@ impl AppState {
         self.hovered_brush_button = rect_contains(self.brush_button_area, column, row);
         self.hovered_more_colors_button = rect_contains(self.more_colors_button_area, column, row);
         self.hovered_rgb_button = rect_contains(self.rgb_button_area, column, row);
+        self.hovered_attr = self.attr_action_at(column, row);
         self.hovered_canvas_cell = if self.hovered_top_action.is_none()
             && !self.hovered_tool_button
             && !self.hovered_brush_button
             && !self.hovered_more_colors_button
             && !self.hovered_rgb_button
+            && self.hovered_attr.is_none()
         {
             self.canvas_cell_at(column, row).map(|(x, y)| (y, x))
         } else {
@@ -1442,6 +1457,13 @@ impl AppState {
             .map(|hit| hit.action)
     }
 
+    fn attr_action_at(&self, column: u16, row: u16) -> Option<TextAttr> {
+        self.attr_button_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
     fn apply_rgb_control(&mut self, control: RgbControl, column: u16) {
         match control {
             RgbControl::Decrement(channel) => self.adjust_rgb_channel(channel, -1),
@@ -1501,6 +1523,11 @@ impl AppState {
     }
 
     fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
+        if let Some(attr) = self.attr_action_at(column, row) {
+            self.toggle_current_attr(attr);
+            return true;
+        }
+
         if let Some(index) = hit_palette_item(
             self.color_palette_area,
             COLOR_SLOT_WIDTH,
@@ -1592,6 +1619,68 @@ impl AppState {
             self.add_recent_extra_color(color);
         }
         self.message = format!("Selected {label} ({})", color.to_hex());
+    }
+
+    fn toggle_current_attr(&mut self, attr: TextAttr) {
+        let current = &self.project.styles[self.current_style];
+        let fg = current.fg;
+        let bg = current.bg;
+        let was_enabled = current.attrs.contains(&attr);
+        let mut attrs = current.attrs.clone();
+        if was_enabled {
+            attrs.retain(|current_attr| *current_attr != attr);
+        } else {
+            attrs.push(attr);
+        }
+        let attrs = normalize_attrs(attrs);
+        self.select_style_variant(
+            fg,
+            bg,
+            attrs,
+            &format!(
+                "{} {}",
+                attr_label(attr),
+                if was_enabled { "off" } else { "on" }
+            ),
+        );
+    }
+
+    fn select_style_variant(
+        &mut self,
+        fg: Color,
+        bg: Option<Color>,
+        attrs: Vec<TextAttr>,
+        label: &str,
+    ) {
+        self.tool = Tool::Pencil;
+
+        if let Some(index) = self
+            .project
+            .styles
+            .iter()
+            .position(|style| style.fg == fg && style.bg == bg && style.attrs == attrs)
+        {
+            self.current_style = index;
+            self.message = format!("Selected style ({label})");
+            return;
+        }
+
+        if self.project.styles.len() >= MAX_STYLES {
+            self.message = "Cannot create style variant: style limit reached".to_string();
+            return;
+        }
+
+        let id = unique_style_id(&self.project, &style_id_base_for_variant(fg, bg, &attrs));
+        self.project.styles.push(TerminalStyle {
+            id,
+            fg,
+            bg,
+            attrs,
+            role: Some("style-variant".to_string()),
+        });
+        self.current_style = self.project.styles.len() - 1;
+        self.dirty = true;
+        self.message = format!("Selected style ({label})");
     }
 
     fn add_recent_extra_color(&mut self, color: Color) {
@@ -2209,16 +2298,6 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         .bg
         .map(Color::to_hex)
         .unwrap_or_else(|| "transparent".to_string());
-    let attrs = if style.attrs.is_empty() {
-        "none".to_string()
-    } else {
-        style
-            .attrs
-            .iter()
-            .map(|attr| format!("{attr:?}").to_lowercase())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
 
     let block = Block::default().title("Tools").borders(Borders::ALL);
     let inner = block.inner(area);
@@ -2229,6 +2308,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     app.color_palette_area = Rect::default();
     app.recent_color_palette_area = Rect::default();
     app.character_palette_area = Rect::default();
+    app.attr_button_areas.clear();
     app.more_colors_button_area = Rect::default();
     app.rgb_button_area = Rect::default();
 
@@ -2275,14 +2355,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         TuiStyle::default().fg(TuiColor::Rgb(style.fg.r, style.fg.g, style.fg.b)),
     );
     draw_sidebar_line(frame, inner, &mut y, max_y, format!("BG: {bg}"), normal);
-    draw_sidebar_line(
-        frame,
-        inner,
-        &mut y,
-        max_y,
-        format!("Attrs: {attrs}"),
-        normal,
-    );
+    draw_attr_toggles(frame, app, inner, &mut y, max_y, &style.attrs);
     draw_sidebar_spacer(&mut y, max_y);
 
     draw_sidebar_line(frame, inner, &mut y, max_y, "Colors".to_string(), strong);
@@ -2449,6 +2522,51 @@ fn draw_sidebar_control_line(
     *y = y.saturating_add(1);
 
     line_area
+}
+
+fn draw_attr_toggles(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    y: &mut u16,
+    max_y: u16,
+    attrs: &[TextAttr],
+) {
+    if *y >= max_y {
+        return;
+    }
+
+    let label = "Attrs:";
+    draw_text(frame, area.x, *y, area.width, label, TuiStyle::default());
+    let mut x = area
+        .x
+        .saturating_add(u16::try_from(label.len()).unwrap_or(0) + 1);
+    let max_x = area.x.saturating_add(area.width);
+
+    for attr in ATTR_CHOICES {
+        let button = Rect {
+            x,
+            y: *y,
+            width: 3,
+            height: 1,
+        };
+        if button.x.saturating_add(button.width) > max_x {
+            break;
+        }
+
+        let selected = attrs.contains(attr);
+        let hovered = app.hovered_attr == Some(*attr);
+        let style = choice_style(selected, hovered);
+        fill_rect(frame, button, style);
+        draw_text_centered(frame, button, button.y, attr_short_label(*attr), style);
+        app.attr_button_areas.push(ButtonHit {
+            action: *attr,
+            area: button,
+        });
+        x = x.saturating_add(button.width + 1);
+    }
+
+    *y = y.saturating_add(1);
 }
 
 fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
@@ -2844,6 +2962,56 @@ fn is_visible_palette_color(color: Color) -> bool {
 
 fn style_id_base_for_color(color: Color) -> String {
     format!("color-{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+}
+
+fn style_id_base_for_variant(fg: Color, bg: Option<Color>, attrs: &[TextAttr]) -> String {
+    let mut id = style_id_base_for_color(fg);
+    if let Some(bg) = bg {
+        id.push_str(&format!("-bg{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b));
+    }
+    for attr in attrs {
+        id.push('-');
+        id.push_str(attr_id(attr));
+    }
+    id
+}
+
+fn normalize_attrs(attrs: Vec<TextAttr>) -> Vec<TextAttr> {
+    ATTR_CHOICES
+        .iter()
+        .copied()
+        .filter(|attr| attrs.contains(attr))
+        .collect()
+}
+
+fn attr_id(attr: &TextAttr) -> &'static str {
+    match attr {
+        TextAttr::Bold => "bold",
+        TextAttr::Dim => "dim",
+        TextAttr::Italic => "italic",
+        TextAttr::Underline => "underline",
+        TextAttr::Reverse => "reverse",
+    }
+}
+
+fn attr_label(attr: TextAttr) -> &'static str {
+    match attr {
+        TextAttr::Bold => "Bold",
+        TextAttr::Dim => "Dim",
+        TextAttr::Italic => "Italic",
+        TextAttr::Underline => "Underline",
+        TextAttr::Reverse => "Reverse",
+    }
+}
+
+fn attr_short_label(attr: TextAttr) -> &'static str {
+    match attr {
+        TextAttr::Bold => "B",
+        TextAttr::Dim => "D",
+        TextAttr::Italic => "I",
+        TextAttr::Underline => "U",
+        TextAttr::Reverse => "R",
+    }
 }
 
 fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
@@ -3696,6 +3864,54 @@ mod tests {
         assert_eq!(app.project.styles[app.current_style].fg, red.color);
         assert_eq!(app.tool, Tool::Pencil);
         assert!(app.dirty);
+    }
+
+    #[test]
+    fn toggling_attrs_creates_non_destructive_style_variant() {
+        let mut app = AppState::editor(Project::new_image("attrs", 4, 2), None, false, "");
+        app.set_cell_for_stroke(
+            0,
+            0,
+            Some(PaintedCell {
+                ch: '#',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+
+        app.toggle_current_attr(TextAttr::Bold);
+
+        assert!(app.current_style > 0);
+        assert_eq!(app.project.styles[0].attrs, Vec::<TextAttr>::new());
+        assert_eq!(
+            app.project.styles[app.current_style].attrs,
+            vec![TextAttr::Bold]
+        );
+        assert_eq!(app.current_frame().cells[&(0, 0)].style_index, 0);
+
+        app.toggle_current_attr(TextAttr::Bold);
+
+        assert_eq!(app.current_style, 0);
+    }
+
+    #[test]
+    fn attr_click_uses_sidebar_hit_area() {
+        let mut app = AppState::editor(Project::new_image("attrs", 4, 2), None, false, "");
+        app.attr_button_areas.push(ButtonHit {
+            action: TextAttr::Underline,
+            area: Rect {
+                x: 2,
+                y: 3,
+                width: 3,
+                height: 1,
+            },
+        });
+
+        assert!(app.apply_palette_click(3, 3));
+        assert_eq!(
+            app.project.styles[app.current_style].attrs,
+            vec![TextAttr::Underline]
+        );
     }
 
     #[test]
