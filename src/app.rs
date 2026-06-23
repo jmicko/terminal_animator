@@ -26,7 +26,7 @@ use std::time::Duration;
 
 const DEFAULT_NEW_WIDTH: u16 = 48;
 const DEFAULT_NEW_HEIGHT: u16 = 16;
-const COLOR_SLOT_WIDTH: u16 = 3;
+const COLOR_SLOT_WIDTH: u16 = 4;
 const COLOR_SWATCH_WIDTH: u16 = 2;
 const CHAR_SLOT_WIDTH: u16 = 3;
 const TOP_BUTTON_GAP: u16 = 1;
@@ -1569,43 +1569,47 @@ fn draw_color_palette(
             palette_color.color.b,
         ));
 
-        for offset in 0..COLOR_SWATCH_WIDTH.min(area.width.saturating_sub(x - area.x)) {
-            frame.buffer_mut()[(x + offset, y)]
+        let selected = palette_color.color == selected_color;
+        let hovered = hovered_index == Some(index);
+        let indicator_style = if selected && hovered {
+            TuiStyle::default()
+                .fg(TuiColor::Rgb(198, 160, 246))
+                .add_modifier(Modifier::BOLD)
+        } else if selected {
+            TuiStyle::default()
+                .fg(TuiColor::Rgb(245, 190, 82))
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            TuiStyle::default()
+                .fg(TuiColor::Rgb(79, 209, 197))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            TuiStyle::default()
+        };
+        let (left_indicator, right_indicator) = if selected {
+            ("▶", "◀")
+        } else if hovered {
+            (">", "<")
+        } else {
+            (" ", " ")
+        };
+
+        frame.buffer_mut()[(x, y)]
+            .set_symbol(left_indicator)
+            .set_style(indicator_style);
+
+        let swatch_start = x.saturating_add(1);
+        for offset in 0..COLOR_SWATCH_WIDTH.min(area.width.saturating_sub(swatch_start - area.x)) {
+            frame.buffer_mut()[(swatch_start + offset, y)]
                 .set_symbol(" ")
                 .set_style(style);
         }
 
-        let marker_x = x + COLOR_SWATCH_WIDTH;
-        if marker_x < area.x + area.width {
-            let selected = palette_color.color == selected_color;
-            let hovered = hovered_index == Some(index);
-            let (marker, marker_style) = if selected && hovered {
-                (
-                    "●",
-                    TuiStyle::default()
-                        .fg(TuiColor::Rgb(198, 160, 246))
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else if selected {
-                (
-                    "●",
-                    TuiStyle::default()
-                        .fg(TuiColor::Rgb(245, 190, 82))
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else if hovered {
-                (
-                    "›",
-                    TuiStyle::default()
-                        .fg(TuiColor::Rgb(79, 209, 197))
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (" ", TuiStyle::default())
-            };
-            frame.buffer_mut()[(marker_x, y)]
-                .set_symbol(marker)
-                .set_style(marker_style);
+        let right_indicator_x = swatch_start + COLOR_SWATCH_WIDTH;
+        if right_indicator_x < area.x + area.width {
+            frame.buffer_mut()[(right_indicator_x, y)]
+                .set_symbol(right_indicator)
+                .set_style(indicator_style);
         }
     }
 }
@@ -2140,15 +2144,15 @@ mod tests {
         let area = Rect {
             x: 10,
             y: 5,
-            width: 6,
+            width: 8,
             height: 2,
         };
 
         assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 10, 5, 4), Some(0));
-        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 13, 5, 4), Some(1));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 14, 5, 4), Some(1));
         assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 10, 6, 4), Some(2));
-        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 13, 6, 4), Some(3));
-        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 16, 6, 4), None);
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 14, 6, 4), Some(3));
+        assert_eq!(hit_palette_item(area, COLOR_SLOT_WIDTH, 18, 6, 4), None);
     }
 
     #[test]
@@ -2157,7 +2161,7 @@ mod tests {
         app.color_palette_area = Rect {
             x: 1,
             y: 1,
-            width: 6,
+            width: 8,
             height: 2,
         };
         app.character_palette_area = Rect {
@@ -2167,7 +2171,7 @@ mod tests {
             height: 2,
         };
 
-        app.update_hover(4, 1);
+        app.update_hover(5, 1);
         assert_eq!(app.hovered_palette, Some(PaletteHover::Color(1)));
 
         app.update_hover(7, 5);
