@@ -1,7 +1,7 @@
 use crate::format::{
-    Color, FormatError, MAX_AREA_PER_FRAME, MAX_HEIGHT, MAX_STYLES, MAX_WIDTH, PaintedCell,
-    Project, TerminalStyle, TextAttr, export_plain_text, is_valid_v1_character,
-    load_project_from_path, save_project_to_path,
+    AssetKind, Color, FormatError, Frame as ProjectFrame, MAX_AREA_PER_FRAME, MAX_FRAMES,
+    MAX_HEIGHT, MAX_STYLES, MAX_WIDTH, PaintedCell, Project, TerminalStyle, TextAttr,
+    export_plain_text, is_valid_v1_character, load_project_from_path, save_project_to_path,
 };
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{
@@ -363,6 +363,11 @@ const TOOL_CHOICES: &[Tool] = &[Tool::Pencil, Tool::Eraser, Tool::Eyedropper];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopAction {
+    PreviousFrame,
+    NextFrame,
+    DuplicateFrame,
+    BlankFrame,
+    ToggleOnionSkin,
     Save,
     SaveAs,
     ExportText,
@@ -372,6 +377,11 @@ enum TopAction {
 impl TopAction {
     fn label(self) -> &'static str {
         match self {
+            Self::PreviousFrame => "Prev",
+            Self::NextFrame => "Next",
+            Self::DuplicateFrame => "Dup",
+            Self::BlankFrame => "Blank",
+            Self::ToggleOnionSkin => "Onion",
             Self::Save => "Save",
             Self::SaveAs => "Save As",
             Self::ExportText => "Export",
@@ -381,6 +391,11 @@ impl TopAction {
 }
 
 const TOP_ACTIONS: &[TopAction] = &[
+    TopAction::PreviousFrame,
+    TopAction::NextFrame,
+    TopAction::DuplicateFrame,
+    TopAction::BlankFrame,
+    TopAction::ToggleOnionSkin,
     TopAction::Save,
     TopAction::SaveAs,
     TopAction::ExportText,
@@ -390,6 +405,7 @@ const TOP_ACTIONS: &[TopAction] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WelcomeAction {
     NewImage,
+    NewAnimation,
     OpenFile,
     Quit,
 }
@@ -398,6 +414,7 @@ impl WelcomeAction {
     fn label(self) -> &'static str {
         match self {
             Self::NewImage => "New Image",
+            Self::NewAnimation => "New Animation",
             Self::OpenFile => "Open File",
             Self::Quit => "Quit",
         }
@@ -406,6 +423,7 @@ impl WelcomeAction {
 
 const WELCOME_ACTIONS: &[WelcomeAction] = &[
     WelcomeAction::NewImage,
+    WelcomeAction::NewAnimation,
     WelcomeAction::OpenFile,
     WelcomeAction::Quit,
 ];
@@ -485,6 +503,10 @@ enum Modal {
         input: String,
         target_path: Option<PathBuf>,
     },
+    NewAnimation {
+        input: String,
+        target_path: Option<PathBuf>,
+    },
     OpenFile {
         input: String,
     },
@@ -519,7 +541,17 @@ enum Modal {
 
 #[derive(Debug, Clone, Default)]
 struct Stroke {
+    frame_index: usize,
     changes: BTreeMap<(u16, u16), CellChange>,
+}
+
+impl Stroke {
+    fn new(frame_index: usize) -> Self {
+        Self {
+            frame_index,
+            changes: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -542,6 +574,8 @@ struct AppState {
     tool: Tool,
     brush_char: char,
     current_style: usize,
+    current_frame_index: usize,
+    onion_skin: bool,
     canvas_area: Rect,
     tool_button_area: Rect,
     brush_button_area: Rect,
@@ -634,6 +668,8 @@ impl AppState {
             tool: Tool::Pencil,
             brush_char: '#',
             current_style: 0,
+            current_frame_index: 0,
+            onion_skin: false,
             canvas_area: Rect::default(),
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
@@ -688,6 +724,8 @@ impl AppState {
             tool: Tool::Pencil,
             brush_char: '#',
             current_style: 0,
+            current_frame_index: 0,
+            onion_skin: false,
             canvas_area: Rect::default(),
             tool_button_area: Rect::default(),
             brush_button_area: Rect::default(),
@@ -728,6 +766,27 @@ impl AppState {
         }
     }
 
+    fn current_frame(&self) -> &ProjectFrame {
+        &self.project.frames[self.current_frame_index.min(self.project.frames.len() - 1)]
+    }
+
+    fn current_frame_mut(&mut self) -> &mut ProjectFrame {
+        let frame_index = self.current_frame_index.min(self.project.frames.len() - 1);
+        &mut self.project.frames[frame_index]
+    }
+
+    fn previous_frame(&self) -> Option<&ProjectFrame> {
+        self.current_frame_index
+            .checked_sub(1)
+            .and_then(|index| self.project.frames.get(index))
+    }
+
+    fn normalize_frame_kind(&mut self) {
+        if self.project.frames.len() > 1 {
+            self.project.asset.kind = AssetKind::Animation;
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
@@ -748,6 +807,12 @@ impl AppState {
         match key.code {
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.modal = Some(Modal::NewImage {
+                    input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
+                    target_path: None,
+                });
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.modal = Some(Modal::NewAnimation {
                     input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
                     target_path: None,
                 });
@@ -790,6 +855,21 @@ impl AppState {
         }
 
         match key.code {
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right => {
+                self.next_frame_or_create();
+            }
+            KeyCode::Left => {
+                self.previous_frame_or_message();
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.duplicate_current_frame();
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') => {
+                self.insert_blank_frame();
+            }
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                self.toggle_onion_skin();
+            }
             KeyCode::Char('p') | KeyCode::Char('P') => {
                 self.select_tool(Tool::Pencil);
             }
@@ -954,6 +1034,26 @@ impl AppState {
                     self.modal = Some(Modal::NewImage { input, target_path });
                 }
             },
+            Modal::NewAnimation { input, target_path } => match parse_dimensions(&input) {
+                Some((width, height)) => {
+                    let name = target_path
+                        .as_deref()
+                        .map(asset_name_from_path)
+                        .unwrap_or_else(|| "untitled".to_string());
+                    let mut project = Project::new_image(name, width, height);
+                    project.asset.kind = AssetKind::Animation;
+                    *self = Self::editor(
+                        project,
+                        target_path,
+                        true,
+                        format!("Created {width}x{height} animation"),
+                    );
+                }
+                None => {
+                    self.message = "Enter dimensions as WIDTHxHEIGHT, like 48x16".to_string();
+                    self.modal = Some(Modal::NewAnimation { input, target_path });
+                }
+            },
             Modal::OpenFile { input } => {
                 let path = PathBuf::from(input.trim());
                 if path.as_os_str().is_empty() {
@@ -1089,7 +1189,10 @@ impl AppState {
                     return;
                 }
 
-                match fs::write(&path, export_plain_text(&self.project, 0)) {
+                match fs::write(
+                    &path,
+                    export_plain_text(&self.project, self.current_frame_index),
+                ) {
                     Ok(()) => self.message = format!("Exported {}", path.display()),
                     Err(error) => self.message = format!("Export failed: {error}"),
                 }
@@ -1150,12 +1253,12 @@ impl AppState {
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
                 }
-                self.active_stroke = Some(Stroke::default());
+                self.active_stroke = Some(Stroke::new(self.current_frame_index));
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if self.active_stroke.is_none() {
-                    self.active_stroke = Some(Stroke::default());
+                    self.active_stroke = Some(Stroke::new(self.current_frame_index));
                 }
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
@@ -1517,7 +1620,7 @@ impl AppState {
             }
             Tool::Eraser => self.set_cell_for_stroke(x, y, None),
             Tool::Eyedropper => {
-                if let Some(cell) = self.project.first_frame().cells.get(&(y, x)) {
+                if let Some(cell) = self.current_frame().cells.get(&(y, x)).cloned() {
                     self.brush_char = cell.ch;
                     self.current_style = cell.style_index;
                     self.message = format!("Picked {ch:?}", ch = cell.ch);
@@ -1529,7 +1632,19 @@ impl AppState {
     }
 
     fn set_cell_for_stroke(&mut self, x: u16, y: u16, after: Option<PaintedCell>) {
-        let before = self.project.first_frame().cells.get(&(y, x)).cloned();
+        let frame_index = self.current_frame_index;
+        let should_restart_stroke = self
+            .active_stroke
+            .as_ref()
+            .is_some_and(|stroke| stroke.frame_index != frame_index);
+        if should_restart_stroke {
+            self.finish_stroke();
+        }
+        if self.active_stroke.is_none() {
+            self.active_stroke = Some(Stroke::new(frame_index));
+        }
+
+        let before = self.current_frame().cells.get(&(y, x)).cloned();
         if before == after {
             return;
         }
@@ -1547,10 +1662,10 @@ impl AppState {
 
         match after {
             Some(cell) => {
-                self.project.first_frame_mut().cells.insert((y, x), cell);
+                self.current_frame_mut().cells.insert((y, x), cell);
             }
             None => {
-                self.project.first_frame_mut().cells.remove(&(y, x));
+                self.current_frame_mut().cells.remove(&(y, x));
             }
         }
 
@@ -1579,16 +1694,16 @@ impl AppState {
             return;
         };
 
+        let frame_index = stroke.frame_index.min(self.project.frames.len() - 1);
+        self.current_frame_index = frame_index;
+        let frame = &mut self.project.frames[frame_index];
         for (&(y, x), change) in &stroke.changes {
             match &change.before {
                 Some(cell) => {
-                    self.project
-                        .first_frame_mut()
-                        .cells
-                        .insert((y, x), cell.clone());
+                    frame.cells.insert((y, x), cell.clone());
                 }
                 None => {
-                    self.project.first_frame_mut().cells.remove(&(y, x));
+                    frame.cells.remove(&(y, x));
                 }
             }
         }
@@ -1604,16 +1719,16 @@ impl AppState {
             return;
         };
 
+        let frame_index = stroke.frame_index.min(self.project.frames.len() - 1);
+        self.current_frame_index = frame_index;
+        let frame = &mut self.project.frames[frame_index];
         for (&(y, x), change) in &stroke.changes {
             match &change.after {
                 Some(cell) => {
-                    self.project
-                        .first_frame_mut()
-                        .cells
-                        .insert((y, x), cell.clone());
+                    frame.cells.insert((y, x), cell.clone());
                 }
                 None => {
-                    self.project.first_frame_mut().cells.remove(&(y, x));
+                    frame.cells.remove(&(y, x));
                 }
             }
         }
@@ -1634,8 +1749,87 @@ impl AppState {
         self.select_tool(tool);
     }
 
+    fn previous_frame_or_message(&mut self) {
+        self.finish_stroke();
+        if self.current_frame_index == 0 {
+            self.message = "Already on first frame".to_string();
+            return;
+        }
+
+        self.current_frame_index -= 1;
+        self.message = self.frame_position_message("Frame");
+    }
+
+    fn next_frame_or_create(&mut self) {
+        self.finish_stroke();
+        if self.current_frame_index + 1 < self.project.frames.len() {
+            self.current_frame_index += 1;
+            self.message = self.frame_position_message("Frame");
+            return;
+        }
+
+        self.insert_frame_after_current(self.current_frame().cells.clone(), "Added frame");
+    }
+
+    fn duplicate_current_frame(&mut self) {
+        self.finish_stroke();
+        self.insert_frame_after_current(self.current_frame().cells.clone(), "Duplicated frame");
+    }
+
+    fn insert_blank_frame(&mut self) {
+        self.finish_stroke();
+        self.insert_frame_after_current(BTreeMap::new(), "Added blank frame");
+    }
+
+    fn insert_frame_after_current(
+        &mut self,
+        cells: BTreeMap<(u16, u16), PaintedCell>,
+        action: &'static str,
+    ) {
+        if self.project.frames.len() >= MAX_FRAMES {
+            self.message = format!("Cannot add frame: limit is {MAX_FRAMES}");
+            return;
+        }
+
+        let insert_index = self.current_frame_index + 1;
+        let frame = ProjectFrame {
+            id: Some(next_frame_id(&self.project)),
+            duration_ms: self.project.asset.default_frame_duration_ms,
+            cells,
+        };
+        self.project.frames.insert(insert_index, frame);
+        self.current_frame_index = insert_index;
+        self.normalize_frame_kind();
+        self.dirty = true;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.message = self.frame_position_message(action);
+    }
+
+    fn toggle_onion_skin(&mut self) {
+        self.onion_skin = !self.onion_skin;
+        self.message = if self.onion_skin {
+            "Onion skin on".to_string()
+        } else {
+            "Onion skin off".to_string()
+        };
+    }
+
+    fn frame_position_message(&self, prefix: &str) -> String {
+        format!(
+            "{prefix} {}/{}",
+            self.current_frame_index + 1,
+            self.project.frames.len()
+        )
+    }
+
     fn run_top_action(&mut self, action: TopAction) {
         match action {
+            TopAction::PreviousFrame => self.previous_frame_or_message(),
+            TopAction::NextFrame => self.next_frame_or_create(),
+            TopAction::DuplicateFrame => self.duplicate_current_frame(),
+            TopAction::BlankFrame => self.insert_blank_frame(),
+            TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
             TopAction::Save => self.save(),
             TopAction::SaveAs => self.open_save_as(),
             TopAction::ExportText => self.open_export_text(),
@@ -1647,6 +1841,12 @@ impl AppState {
         match action {
             WelcomeAction::NewImage => {
                 self.modal = Some(Modal::NewImage {
+                    input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
+                    target_path: None,
+                });
+            }
+            WelcomeAction::NewAnimation => {
+                self.modal = Some(Modal::NewAnimation {
                     input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
                     target_path: None,
                 });
@@ -1935,13 +2135,26 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "untitled".to_string());
+    let kind = match app.project.asset.kind {
+        AssetKind::Image => "image",
+        AssetKind::Animation => "animation",
+    };
+    let onion = if app.onion_skin {
+        "onion on"
+    } else {
+        "onion off"
+    };
     let text = format!(
-        " {}{} | {}x{} | {} cells",
+        " {}{} | {}x{} | {} | frame {}/{} | {} cells | {}",
         path,
         dirty,
         app.project.asset.width,
         app.project.asset.height,
-        app.project.first_frame().cells.len()
+        kind,
+        app.current_frame_index + 1,
+        app.project.frames.len(),
+        app.current_frame().cells.len(),
+        onion
     );
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
@@ -2649,10 +2862,24 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             let buffer_cell = &mut frame.buffer_mut()[(screen_x, screen_y)];
             let hovered = app.hovered_canvas_cell == Some((y, x));
 
-            if let Some(cell) = app.project.first_frame().cells.get(&(y, x)) {
+            if let Some(cell) = app.current_frame().cells.get(&(y, x)) {
                 let mut style = style_to_tui(&app.project.styles[cell.style_index]);
                 if hovered {
                     style = style.bg(TuiColor::Rgb(33, 77, 85));
+                }
+                let symbol = cell.ch.to_string();
+                buffer_cell.set_symbol(&symbol);
+                buffer_cell.set_style(style);
+            } else if app.onion_skin
+                && let Some(cell) = app
+                    .previous_frame()
+                    .and_then(|previous| previous.cells.get(&(y, x)))
+            {
+                let mut style = style_to_tui(&app.project.styles[cell.style_index])
+                    .fg(TuiColor::Rgb(98, 123, 132))
+                    .add_modifier(Modifier::DIM);
+                if hovered {
+                    style = style.bg(TuiColor::Rgb(24, 52, 58));
                 }
                 let symbol = cell.ch.to_string();
                 buffer_cell.set_symbol(&symbol);
@@ -2686,7 +2913,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help = "Click Tool for menu | Click top actions | Click palettes | Ctrl-Z/Y undo/redo";
+    let help = "Click Tool/top actions/palettes | N/Right next | D duplicate | B blank | O onion";
     let lines = vec![
         Line::from(help),
         Line::from(app.message.as_str()),
@@ -2710,7 +2937,7 @@ fn canvas_status(app: &AppState) -> String {
         );
     };
 
-    if let Some(cell) = app.project.first_frame().cells.get(&(y, x)) {
+    if let Some(cell) = app.current_frame().cells.get(&(y, x)) {
         let style = &app.project.styles[cell.style_index];
         format!(
             "Cell {},{}: {} using {}",
@@ -2756,6 +2983,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
 
     let (title, body) = match modal {
         Modal::NewImage { input, .. } => ("New Image", format!("Dimensions: {input}")),
+        Modal::NewAnimation { input, .. } => ("New Animation", format!("Dimensions: {input}")),
         Modal::OpenFile { input } => ("Open File", format!("Path: {input}")),
         Modal::SaveAs { input } => ("Save As", format!("Path: {input}")),
         Modal::BrushChar { input } => ("Brush Character", format!("Character: {input}")),
@@ -3294,6 +3522,7 @@ fn style_to_tui(style: &TerminalStyle) -> TuiStyle {
 fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
     match modal.as_mut()? {
         Modal::NewImage { input, .. }
+        | Modal::NewAnimation { input, .. }
         | Modal::OpenFile { input }
         | Modal::SaveAs { input }
         | Modal::BrushChar { input }
@@ -3383,6 +3612,20 @@ fn next_style_id(project: &Project) -> String {
         }
     }
     unreachable!("unbounded style ID search")
+}
+
+fn next_frame_id(project: &Project) -> String {
+    for index in 1.. {
+        let candidate = format!("frame-{index}");
+        if !project
+            .frames
+            .iter()
+            .any(|frame| frame.id.as_deref() == Some(candidate.as_str()))
+        {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded frame ID search")
 }
 
 fn unique_style_id(project: &Project, base: &str) -> String {
@@ -3545,6 +3788,87 @@ mod tests {
     }
 
     #[test]
+    fn next_frame_creates_animation_frame_by_copying_current_frame() {
+        let mut app = AppState::editor(Project::new_image("anim", 4, 2), None, false, "");
+        app.set_cell_for_stroke(
+            1,
+            0,
+            Some(PaintedCell {
+                ch: '#',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+
+        app.next_frame_or_create();
+
+        assert_eq!(app.project.asset.kind, AssetKind::Animation);
+        assert_eq!(app.project.frames.len(), 2);
+        assert_eq!(app.current_frame_index, 1);
+        assert_eq!(
+            app.current_frame().cells[&(0, 1)],
+            PaintedCell {
+                ch: '#',
+                style_index: 0
+            }
+        );
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn blank_frame_creates_empty_current_frame() {
+        let mut app = AppState::editor(Project::new_image("anim", 4, 2), None, false, "");
+        app.set_cell_for_stroke(
+            1,
+            0,
+            Some(PaintedCell {
+                ch: '#',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+
+        app.insert_blank_frame();
+
+        assert_eq!(app.project.frames.len(), 2);
+        assert!(app.current_frame().cells.is_empty());
+        assert_eq!(app.project.asset.kind, AssetKind::Animation);
+    }
+
+    #[test]
+    fn undo_applies_to_frame_that_was_edited() {
+        let mut app = AppState::editor(Project::new_image("anim", 4, 2), None, false, "");
+        app.insert_blank_frame();
+        app.set_cell_for_stroke(
+            2,
+            0,
+            Some(PaintedCell {
+                ch: '*',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+        app.current_frame_index = 0;
+
+        app.undo();
+
+        assert_eq!(app.current_frame_index, 1);
+        assert!(!app.project.frames[1].cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn onion_skin_toggle_is_local_view_state() {
+        let mut app = AppState::editor(Project::new_image("anim", 4, 2), None, false, "");
+
+        app.toggle_onion_skin();
+        assert!(app.onion_skin);
+        assert!(!app.dirty);
+
+        app.toggle_onion_skin();
+        assert!(!app.onion_skin);
+    }
+
+    #[test]
     fn expanded_palette_is_arranged_as_hue_columns() {
         let red_dark = expanded_palette_color(0);
         let red_lighter = expanded_palette_color(EXPANDED_HUE_COUNT);
@@ -3623,7 +3947,29 @@ mod tests {
         assert!(matches!(app.modal, Some(Modal::NewImage { .. })));
 
         app.close_modal("");
+        app.run_welcome_action(WelcomeAction::NewAnimation);
+        assert!(matches!(app.modal, Some(Modal::NewAnimation { .. })));
+
+        app.close_modal("");
         app.run_welcome_action(WelcomeAction::OpenFile);
         assert!(matches!(app.modal, Some(Modal::OpenFile { .. })));
+    }
+
+    #[test]
+    fn new_animation_modal_creates_animation_asset() {
+        let mut app = AppState::welcome("");
+        app.modal = Some(Modal::NewAnimation {
+            input: "12x4".to_string(),
+            target_path: None,
+        });
+
+        let modal = app.modal.take().expect("new animation modal");
+        app.commit_modal(modal);
+
+        assert_eq!(app.screen, Screen::Editor);
+        assert_eq!(app.project.asset.kind, AssetKind::Animation);
+        assert_eq!(app.project.asset.width, 12);
+        assert_eq!(app.project.asset.height, 4);
+        assert_eq!(app.project.frames.len(), 1);
     }
 }

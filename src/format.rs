@@ -12,7 +12,7 @@ pub const DEFAULT_FRAME_DURATION_MS: u64 = 250;
 pub const MAX_WIDTH: u16 = 500;
 pub const MAX_HEIGHT: u16 = 300;
 pub const MAX_AREA_PER_FRAME: u64 = 150_000;
-const MAX_FRAMES: usize = 1_000;
+pub const MAX_FRAMES: usize = 1_000;
 pub const MAX_STYLES: usize = 256;
 const MAX_RUNS_PER_FRAME: usize = 10_000;
 const MAX_EXPLICIT_CELLS_PER_FRAME: usize = 150_000;
@@ -166,6 +166,7 @@ impl Project {
         &self.frames[0]
     }
 
+    #[cfg(test)]
     pub fn first_frame_mut(&mut self) -> &mut Frame {
         &mut self.frames[0]
     }
