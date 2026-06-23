@@ -2,7 +2,10 @@ mod app;
 mod format;
 
 use anyhow::{Result, bail};
-use app::{Startup, export_text_file, parse_new_dimensions, run_interactive, startup_from_path};
+use app::{
+    Startup, export_ansi_file, export_text_file, parse_new_dimensions, run_interactive,
+    startup_from_path,
+};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -27,11 +30,11 @@ fn main() -> Result<()> {
             .try_into()
             .expect("clap enforces exactly three export args");
 
-        if format != "text" {
-            bail!("unsupported export format {format:?}; expected \"text\"");
+        match format.as_str() {
+            "text" => export_text_file(&PathBuf::from(input), &PathBuf::from(output))?,
+            "ansi" => export_ansi_file(&PathBuf::from(input), &PathBuf::from(output))?,
+            _ => bail!("unsupported export format {format:?}; expected \"text\" or \"ansi\""),
         }
-
-        export_text_file(&PathBuf::from(input), &PathBuf::from(output))?;
         return Ok(());
     }
 

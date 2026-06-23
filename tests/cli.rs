@@ -45,3 +45,26 @@ fn cli_exports_text_file() {
     assert!(status.success());
     assert_eq!(fs::read_to_string(output).expect("read output"), " * \n   ");
 }
+
+#[test]
+fn cli_exports_ansi_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = dir.path().join("sample.tanim.toml");
+    let output = dir.path().join("sample.ansi");
+
+    fs::write(&input, SAMPLE).expect("write sample");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_terminal_animator"))
+        .arg("--export")
+        .arg("ansi")
+        .arg(&input)
+        .arg(&output)
+        .status()
+        .expect("run terminal_animator");
+
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(output).expect("read output"),
+        " \u{1b}[0;38;2;255;255;255m*\u{1b}[0m \n   "
+    );
+}

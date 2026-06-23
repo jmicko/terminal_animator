@@ -1,6 +1,6 @@
 use crate::format::{
     AssetKind, Color, FormatError, Frame as ProjectFrame, MAX_AREA_PER_FRAME, MAX_FRAMES,
-    MAX_HEIGHT, MAX_STYLES, MAX_WIDTH, PaintedCell, Project, TerminalStyle, TextAttr,
+    MAX_HEIGHT, MAX_STYLES, MAX_WIDTH, PaintedCell, Project, TerminalStyle, TextAttr, export_ansi,
     export_plain_text, is_valid_v1_character, load_project_from_path, save_project_to_path,
 };
 use anyhow::{Context, Result, anyhow};
@@ -3754,6 +3754,14 @@ pub fn export_text_file(input: &Path, output: &Path) -> Result<()> {
     let loaded = load_project_from_path(input)
         .with_context(|| format!("failed to load {}", input.display()))?;
     fs::write(output, export_plain_text(&loaded.project, 0))
+        .with_context(|| format!("failed to write {}", output.display()))?;
+    Ok(())
+}
+
+pub fn export_ansi_file(input: &Path, output: &Path) -> Result<()> {
+    let loaded = load_project_from_path(input)
+        .with_context(|| format!("failed to load {}", input.display()))?;
+    fs::write(output, export_ansi(&loaded.project, 0))
         .with_context(|| format!("failed to write {}", output.display()))?;
     Ok(())
 }

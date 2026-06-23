@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -522,6 +523,65 @@ pub fn export_plain_text(project: &Project, frame_index: usize) -> String {
     }
 
     output
+}
+
+pub fn export_ansi(project: &Project, frame_index: usize) -> String {
+    let frame = project
+        .frames
+        .get(frame_index)
+        .unwrap_or_else(|| project.first_frame());
+    let mut output = String::new();
+    let mut active_style = None;
+
+    for y in 0..project.asset.height {
+        for x in 0..project.asset.width {
+            if let Some(cell) = frame.cells.get(&(y, x)) {
+                if active_style != Some(cell.style_index) {
+                    write_ansi_style(&mut output, &project.styles[cell.style_index]);
+                    active_style = Some(cell.style_index);
+                }
+                output.push(cell.ch);
+            } else {
+                if active_style.is_some() {
+                    output.push_str("\x1b[0m");
+                    active_style = None;
+                }
+                output.push(' ');
+            }
+        }
+
+        if active_style.is_some() {
+            output.push_str("\x1b[0m");
+            active_style = None;
+        }
+        if y + 1 < project.asset.height {
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+fn write_ansi_style(output: &mut String, style: &TerminalStyle) {
+    output.push_str("\x1b[0");
+    for attr in &style.attrs {
+        let _ = write!(output, ";{}", ansi_attr_code(*attr));
+    }
+    let _ = write!(output, ";38;2;{};{};{}", style.fg.r, style.fg.g, style.fg.b);
+    if let Some(bg) = style.bg {
+        let _ = write!(output, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
+    }
+    output.push('m');
+}
+
+fn ansi_attr_code(attr: TextAttr) -> u8 {
+    match attr {
+        TextAttr::Bold => 1,
+        TextAttr::Dim => 2,
+        TextAttr::Italic => 3,
+        TextAttr::Underline => 4,
+        TextAttr::Reverse => 7,
+    }
 }
 
 pub fn is_valid_v1_character(ch: char) -> bool {
@@ -1337,6 +1397,26 @@ style = "plain"
 
         let loaded = parse_project_str(input).expect("valid project");
         assert_eq!(export_plain_text(&loaded.project, 0), "aZcd");
+    }
+
+    #[test]
+    fn ansi_export_writes_truecolor_and_attrs() {
+        let mut project = Project::new_image("ansi", 2, 1);
+        project.styles[0].fg = Color { r: 1, g: 2, b: 3 };
+        project.styles[0].bg = Some(Color { r: 4, g: 5, b: 6 });
+        project.styles[0].attrs = vec![TextAttr::Bold, TextAttr::Underline];
+        project.first_frame_mut().cells.insert(
+            (0, 0),
+            PaintedCell {
+                ch: 'X',
+                style_index: 0,
+            },
+        );
+
+        assert_eq!(
+            export_ansi(&project, 0),
+            "\u{1b}[0;1;4;38;2;1;2;3;48;2;4;5;6mX\u{1b}[0m "
+        );
     }
 
     #[test]
