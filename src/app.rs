@@ -18,7 +18,7 @@ use ratatui::style::{Color as TuiColor, Modifier, Style as TuiStyle};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -346,6 +346,7 @@ enum Tool {
     Pencil,
     Eraser,
     Eyedropper,
+    Fill,
 }
 
 impl Tool {
@@ -354,6 +355,7 @@ impl Tool {
             Self::Pencil => "Pencil",
             Self::Eraser => "Eraser",
             Self::Eyedropper => "Eyedropper",
+            Self::Fill => "Fill",
         }
     }
 
@@ -362,11 +364,12 @@ impl Tool {
             Self::Pencil => "Paint selected character and style",
             Self::Eraser => "Clear cells to transparent",
             Self::Eyedropper => "Pick character and style from a cell",
+            Self::Fill => "Flood-fill matching neighboring cells",
         }
     }
 }
 
-const TOOL_CHOICES: &[Tool] = &[Tool::Pencil, Tool::Eraser, Tool::Eyedropper];
+const TOOL_CHOICES: &[Tool] = &[Tool::Pencil, Tool::Eraser, Tool::Eyedropper, Tool::Fill];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopAction {
@@ -976,6 +979,9 @@ impl AppState {
                 KeyCode::Char('3') | KeyCode::Char('i') | KeyCode::Char('I') => {
                     self.select_tool_from_menu(Tool::Eyedropper);
                 }
+                KeyCode::Char('4') | KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.select_tool_from_menu(Tool::Fill);
+                }
                 _ => {}
             }
             return;
@@ -1266,10 +1272,15 @@ impl AppState {
                 if self.apply_palette_click(mouse.column, mouse.row) {
                     return;
                 }
-                self.active_stroke = Some(Stroke::new(self.current_frame_index));
+                if matches!(self.tool, Tool::Pencil | Tool::Eraser) {
+                    self.active_stroke = Some(Stroke::new(self.current_frame_index));
+                }
                 self.apply_tool_at_screen(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                if !matches!(self.tool, Tool::Pencil | Tool::Eraser) {
+                    return;
+                }
                 if self.active_stroke.is_none() {
                     self.active_stroke = Some(Stroke::new(self.current_frame_index));
                 }
@@ -1717,7 +1728,54 @@ impl AppState {
                     self.message = "Cell is transparent".to_string();
                 }
             }
+            Tool::Fill => self.fill_at(x, y),
         }
+    }
+
+    fn fill_at(&mut self, x: u16, y: u16) {
+        let target = self.current_frame().cells.get(&(y, x)).cloned();
+        let replacement = Some(PaintedCell {
+            ch: self.brush_char,
+            style_index: self.current_style,
+        });
+        if target == replacement {
+            self.message = "Fill target already matches brush".to_string();
+            return;
+        }
+
+        self.active_stroke = Some(Stroke::new(self.current_frame_index));
+        let mut queue = VecDeque::from([(x, y)]);
+        let mut visited = BTreeSet::new();
+        let mut filled_count = 0;
+
+        while let Some((cx, cy)) = queue.pop_front() {
+            if !visited.insert((cx, cy)) {
+                continue;
+            }
+
+            if self.current_frame().cells.get(&(cy, cx)).cloned() != target {
+                continue;
+            }
+
+            self.set_cell_for_stroke(cx, cy, replacement.clone());
+            filled_count += 1;
+
+            if cx > 0 {
+                queue.push_back((cx - 1, cy));
+            }
+            if cy > 0 {
+                queue.push_back((cx, cy - 1));
+            }
+            if cx + 1 < self.project.asset.width {
+                queue.push_back((cx + 1, cy));
+            }
+            if cy + 1 < self.project.asset.height {
+                queue.push_back((cx, cy + 1));
+            }
+        }
+
+        self.finish_stroke();
+        self.message = format!("Filled {filled_count} cells");
     }
 
     fn set_cell_for_stroke(&mut self, x: u16, y: u16, after: Option<PaintedCell>) {
@@ -3650,6 +3708,7 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
             Tool::Pencil => "P",
             Tool::Eraser => "E",
             Tool::Eyedropper => "I",
+            Tool::Fill => "F",
         };
         let label = format!(
             "{}  {}  {:<10} {}",
@@ -4009,6 +4068,64 @@ mod tests {
         assert_eq!(app.tool, Tool::Eraser);
         assert!(app.modal.is_none());
         assert_eq!(app.message, "Eraser selected");
+    }
+
+    #[test]
+    fn fill_tool_paints_contiguous_matching_cells_as_one_stroke() {
+        let mut app = AppState::editor(Project::new_image("fill", 3, 1), None, false, "");
+        app.current_frame_mut().cells.insert(
+            (0, 0),
+            PaintedCell {
+                ch: 'a',
+                style_index: 0,
+            },
+        );
+        app.current_frame_mut().cells.insert(
+            (0, 1),
+            PaintedCell {
+                ch: 'a',
+                style_index: 0,
+            },
+        );
+        app.current_frame_mut().cells.insert(
+            (0, 2),
+            PaintedCell {
+                ch: 'b',
+                style_index: 0,
+            },
+        );
+        app.brush_char = '#';
+
+        app.fill_at(0, 0);
+
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, '#');
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, '#');
+        assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'b');
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo();
+
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, 'a');
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, 'a');
+    }
+
+    #[test]
+    fn fill_tool_respects_transparent_boundaries() {
+        let mut app = AppState::editor(Project::new_image("fill", 3, 1), None, false, "");
+        app.current_frame_mut().cells.insert(
+            (0, 1),
+            PaintedCell {
+                ch: '|',
+                style_index: 0,
+            },
+        );
+        app.brush_char = '.';
+
+        app.fill_at(0, 0);
+
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, '.');
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, '|');
+        assert!(!app.current_frame().cells.contains_key(&(0, 2)));
     }
 
     #[test]
