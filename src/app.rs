@@ -30,7 +30,11 @@ const COLOR_SLOT_WIDTH: u16 = 4;
 const COLOR_SWATCH_WIDTH: u16 = 2;
 const CHAR_SLOT_WIDTH: u16 = 3;
 const TOP_BUTTON_GAP: u16 = 1;
-const MORE_COLOR_COUNT: usize = 216;
+const EXPANDED_COLOR_COLUMNS: u16 = 12;
+const EXPANDED_HUE_COUNT: usize = 12;
+const EXPANDED_TONE_COUNT: usize = 16;
+const EXPANDED_NEUTRAL_COUNT: usize = 36;
+const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT + EXPANDED_NEUTRAL_COUNT;
 const MAX_RECENT_COLORS: usize = 24;
 
 #[derive(Debug, Clone, Copy)]
@@ -427,6 +431,48 @@ impl ModalAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RgbChannel {
+    Red,
+    Green,
+    Blue,
+}
+
+impl RgbChannel {
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Red => "R",
+            Self::Green => "G",
+            Self::Blue => "B",
+        }
+    }
+
+    fn value(self, color: Color) -> u8 {
+        match self {
+            Self::Red => color.r,
+            Self::Green => color.g,
+            Self::Blue => color.b,
+        }
+    }
+
+    fn set_value(self, color: &mut Color, value: u8) {
+        match self {
+            Self::Red => color.r = value,
+            Self::Green => color.g = value,
+            Self::Blue => color.b = value,
+        }
+    }
+}
+
+const RGB_CHANNELS: &[RgbChannel] = &[RgbChannel::Red, RgbChannel::Green, RgbChannel::Blue];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RgbControl {
+    Decrement(RgbChannel),
+    Slider(RgbChannel),
+    Increment(RgbChannel),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ButtonHit<T> {
     action: T,
@@ -461,7 +507,7 @@ enum Modal {
         input: String,
     },
     RgbInput {
-        input: String,
+        color: Color,
     },
     ExportText {
         input: String,
@@ -509,6 +555,7 @@ struct AppState {
     modal_tool_areas: Vec<ButtonHit<Tool>>,
     modal_action_areas: Vec<ButtonHit<ModalAction>>,
     modal_color_areas: Vec<ButtonHit<usize>>,
+    modal_rgb_areas: Vec<ButtonHit<RgbControl>>,
     modal_area: Rect,
     recent_extra_colors: Vec<Color>,
     color_picker_scroll_row: usize,
@@ -523,6 +570,8 @@ struct AppState {
     hovered_modal_tool: Option<Tool>,
     hovered_modal_action: Option<ModalAction>,
     hovered_modal_color: Option<usize>,
+    hovered_rgb_control: Option<RgbControl>,
+    dragging_rgb_channel: Option<RgbChannel>,
     hovered_canvas_cell: Option<(u16, u16)>,
     undo_stack: Vec<Stroke>,
     redo_stack: Vec<Stroke>,
@@ -598,6 +647,7 @@ impl AppState {
             modal_tool_areas: Vec::new(),
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
+            modal_rgb_areas: Vec::new(),
             modal_area: Rect::default(),
             recent_extra_colors: Vec::new(),
             color_picker_scroll_row: 0,
@@ -612,6 +662,8 @@ impl AppState {
             hovered_modal_tool: None,
             hovered_modal_action: None,
             hovered_modal_color: None,
+            hovered_rgb_control: None,
+            dragging_rgb_channel: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -649,6 +701,7 @@ impl AppState {
             modal_tool_areas: Vec::new(),
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
+            modal_rgb_areas: Vec::new(),
             modal_area: Rect::default(),
             recent_extra_colors: Vec::new(),
             color_picker_scroll_row: 0,
@@ -663,6 +716,8 @@ impl AppState {
             hovered_modal_tool: None,
             hovered_modal_action: None,
             hovered_modal_color: None,
+            hovered_rgb_control: None,
+            dragging_rgb_channel: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -795,6 +850,19 @@ impl AppState {
                 KeyCode::PageDown | KeyCode::Down => self.scroll_color_picker(1),
                 KeyCode::PageUp | KeyCode::Up => self.scroll_color_picker(-1),
                 KeyCode::Char('u') | KeyCode::Char('U') => self.open_rgb_input(),
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(self.modal, Some(Modal::RgbInput { .. })) {
+            match key.code {
+                KeyCode::Esc => self.close_modal("RGB canceled"),
+                KeyCode::Enter => {
+                    if let Some(modal) = self.modal.take() {
+                        self.commit_modal(modal);
+                    }
+                }
                 _ => {}
             }
             return;
@@ -1009,16 +1077,10 @@ impl AppState {
                     self.modal = Some(Modal::SetBg { input });
                 }
             }
-            Modal::RgbInput { input } => match parse_rgb_input(&input) {
-                Some(color) => {
-                    self.select_custom_color(color, false);
-                    self.message = format!("Selected RGB {}", color.to_hex());
-                }
-                None => {
-                    self.message = "Enter RGB as 255,128,0 or #FF8000".to_string();
-                    self.modal = Some(Modal::RgbInput { input });
-                }
-            },
+            Modal::RgbInput { color } => {
+                self.select_custom_color(color, false);
+                self.message = format!("Selected RGB {}", color.to_hex());
+            }
             Modal::ExportText { input } => {
                 let path = PathBuf::from(input.trim());
                 if path.as_os_str().is_empty() {
@@ -1121,7 +1183,7 @@ impl AppState {
                 MouseEventKind::ScrollUp => self.scroll_color_picker(-1),
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(index) = self.hovered_modal_color {
-                        let color = color_cube_color(index);
+                        let color = expanded_palette_color(index);
                         self.select_custom_color(color, true);
                         self.close_modal(format!("Selected {}", color.to_hex()));
                     } else if let Some(action) = self.modal_action_at(mouse.column, mouse.row) {
@@ -1132,6 +1194,11 @@ impl AppState {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        if matches!(self.modal, Some(Modal::RgbInput { .. })) {
+            self.handle_rgb_mouse(mouse);
             return;
         }
 
@@ -1155,6 +1222,32 @@ impl AppState {
             } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
                 self.close_modal("Canceled");
             }
+        }
+    }
+
+    fn handle_rgb_mouse(&mut self, mouse: MouseEvent) {
+        self.hovered_rgb_control = self.modal_rgb_control_at(mouse.column, mouse.row);
+        self.hovered_modal_action = self.modal_action_at(mouse.column, mouse.row);
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(control) = self.hovered_rgb_control {
+                    self.apply_rgb_control(control, mouse.column);
+                } else if let Some(action) = self.hovered_modal_action {
+                    self.run_modal_action(action);
+                } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                    self.close_modal("RGB canceled");
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(channel) = self.dragging_rgb_channel {
+                    self.set_rgb_channel_from_slider(channel, mouse.column);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging_rgb_channel = None;
+            }
+            _ => {}
         }
     }
 
@@ -1237,6 +1330,62 @@ impl AppState {
             .iter()
             .find(|hit| rect_contains(hit.area, column, row))
             .map(|hit| hit.action)
+    }
+
+    fn modal_rgb_control_at(&self, column: u16, row: u16) -> Option<RgbControl> {
+        self.modal_rgb_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn apply_rgb_control(&mut self, control: RgbControl, column: u16) {
+        match control {
+            RgbControl::Decrement(channel) => self.adjust_rgb_channel(channel, -1),
+            RgbControl::Increment(channel) => self.adjust_rgb_channel(channel, 1),
+            RgbControl::Slider(channel) => {
+                self.dragging_rgb_channel = Some(channel);
+                self.set_rgb_channel_from_slider(channel, column);
+            }
+        }
+    }
+
+    fn adjust_rgb_channel(&mut self, channel: RgbChannel, delta: i16) {
+        let hex = if let Some(Modal::RgbInput { color }) = self.modal.as_mut() {
+            let value = i16::from(channel.value(*color))
+                .saturating_add(delta)
+                .clamp(0, 255) as u8;
+            channel.set_value(color, value);
+            Some(color.to_hex())
+        } else {
+            None
+        };
+
+        if let Some(hex) = hex {
+            self.message = format!("RGB preview {hex}");
+        }
+    }
+
+    fn set_rgb_channel_from_slider(&mut self, channel: RgbChannel, column: u16) {
+        let Some(area) = self
+            .modal_rgb_areas
+            .iter()
+            .find(|hit| hit.action == RgbControl::Slider(channel))
+            .map(|hit| hit.area)
+        else {
+            return;
+        };
+        let value = rgb_slider_value_at(area, column);
+        let hex = if let Some(Modal::RgbInput { color }) = self.modal.as_mut() {
+            channel.set_value(color, value);
+            Some(color.to_hex())
+        } else {
+            None
+        };
+
+        if let Some(hex) = hex {
+            self.message = format!("RGB preview {hex}");
+        }
     }
 
     fn apply_top_action_click(&mut self, column: u16, row: u16) -> bool {
@@ -1537,6 +1686,8 @@ impl AppState {
         self.hovered_modal_action = None;
         self.hovered_modal_tool = None;
         self.hovered_modal_color = None;
+        self.hovered_rgb_control = None;
+        self.dragging_rgb_channel = None;
         self.message = message.into();
     }
 
@@ -1549,10 +1700,10 @@ impl AppState {
 
     fn open_rgb_input(&mut self) {
         let color = self.project.styles[self.current_style].fg;
-        self.modal = Some(Modal::RgbInput {
-            input: format!("{},{},{}", color.r, color.g, color.b),
-        });
-        self.message = "Enter RGB as 255,128,0".to_string();
+        self.modal = Some(Modal::RgbInput { color });
+        self.hovered_rgb_control = None;
+        self.dragging_rgb_channel = None;
+        self.message = "Adjust RGB with sliders".to_string();
     }
 
     fn scroll_color_picker(&mut self, delta_rows: isize) {
@@ -1571,6 +1722,7 @@ impl AppState {
 
     fn color_picker_columns(&self) -> u16 {
         palette_columns(self.color_picker_grid_area().width, COLOR_SLOT_WIDTH)
+            .clamp(1, EXPANDED_COLOR_COLUMNS)
     }
 
     fn color_picker_visible_rows(&self) -> u16 {
@@ -1582,10 +1734,19 @@ impl AppState {
             return Rect::default();
         }
 
+        let width = self
+            .modal_area
+            .width
+            .saturating_sub(4)
+            .min(EXPANDED_COLOR_COLUMNS.saturating_mul(COLOR_SLOT_WIDTH));
+
         Rect {
-            x: self.modal_area.x + 2,
+            x: self
+                .modal_area
+                .x
+                .saturating_add(self.modal_area.width.saturating_sub(width) / 2),
             y: self.modal_area.y + 3,
-            width: self.modal_area.width.saturating_sub(4),
+            width,
             height: self.modal_area.height.saturating_sub(6),
         }
     }
@@ -2339,13 +2500,127 @@ fn draw_text_centered(frame: &mut Frame<'_>, area: Rect, y: u16, text: &str, sty
     );
 }
 
-fn color_cube_color(index: usize) -> Color {
-    let steps = [0, 51, 102, 153, 204, 255];
+fn expanded_palette_color(index: usize) -> Color {
     let index = index.min(MORE_COLOR_COUNT - 1);
-    let r = steps[(index / 36) % 6];
-    let g = steps[(index / 6) % 6];
-    let b = steps[index % 6];
-    Color { r, g, b }
+
+    if index < EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT {
+        const HUES: [f32; EXPANDED_HUE_COUNT] = [
+            0.0, 24.0, 42.0, 58.0, 86.0, 126.0, 156.0, 184.0, 204.0, 226.0, 268.0, 314.0,
+        ];
+        const TONES: [(f32, f32); EXPANDED_TONE_COUNT] = [
+            (0.68, 0.18),
+            (0.72, 0.25),
+            (0.76, 0.33),
+            (0.80, 0.42),
+            (0.84, 0.51),
+            (0.82, 0.60),
+            (0.74, 0.69),
+            (0.64, 0.78),
+            (0.54, 0.86),
+            (0.44, 0.92),
+            (0.34, 0.30),
+            (0.42, 0.40),
+            (0.50, 0.50),
+            (0.46, 0.62),
+            (0.38, 0.74),
+            (0.30, 0.84),
+        ];
+
+        let hue = HUES[index % EXPANDED_HUE_COUNT];
+        let (saturation, lightness) = TONES[index / EXPANDED_HUE_COUNT];
+        return hsl_to_rgb(hue, saturation, lightness);
+    }
+
+    neutral_palette_color(index - (EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT))
+}
+
+fn neutral_palette_color(index: usize) -> Color {
+    let row = index / usize::from(EXPANDED_COLOR_COLUMNS);
+    let column = index % usize::from(EXPANDED_COLOR_COLUMNS);
+
+    match row {
+        0 => {
+            let value = lerp_u8(18, 242, column, usize::from(EXPANDED_COLOR_COLUMNS) - 1);
+            Color {
+                r: value,
+                g: value,
+                b: value,
+            }
+        }
+        1 => lerp_color(
+            Color {
+                r: 55,
+                g: 38,
+                b: 27,
+            },
+            Color {
+                r: 244,
+                g: 222,
+                b: 186,
+            },
+            column,
+            usize::from(EXPANDED_COLOR_COLUMNS) - 1,
+        ),
+        _ => lerp_color(
+            Color {
+                r: 30,
+                g: 43,
+                b: 54,
+            },
+            Color {
+                r: 222,
+                g: 238,
+                b: 245,
+            },
+            column,
+            usize::from(EXPANDED_COLOR_COLUMNS) - 1,
+        ),
+    }
+}
+
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let hue_section = hue / 60.0;
+    let x = chroma * (1.0 - (hue_section % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hue_section as u8 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = lightness - chroma / 2.0;
+
+    Color {
+        r: float_channel_to_u8(r1 + m),
+        g: float_channel_to_u8(g1 + m),
+        b: float_channel_to_u8(b1 + m),
+    }
+}
+
+fn float_channel_to_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn lerp_color(start: Color, end: Color, step: usize, max_step: usize) -> Color {
+    Color {
+        r: lerp_u8(start.r, end.r, step, max_step),
+        g: lerp_u8(start.g, end.g, step, max_step),
+        b: lerp_u8(start.b, end.b, step, max_step),
+    }
+}
+
+fn lerp_u8(start: u8, end: u8, step: usize, max_step: usize) -> u8 {
+    if max_step == 0 {
+        return start;
+    }
+
+    let start = i32::from(start);
+    let end = i32::from(end);
+    let delta = end - start;
+    (start + delta * i32::try_from(step).unwrap_or(0) / i32::try_from(max_step).unwrap_or(1))
+        .clamp(0, 255) as u8
 }
 
 fn is_visible_palette_color(color: Color) -> bool {
@@ -2356,23 +2631,6 @@ fn is_visible_palette_color(color: Color) -> bool {
 
 fn style_id_base_for_color(color: Color) -> String {
     format!("color-{:02x}{:02x}{:02x}", color.r, color.g, color.b)
-}
-
-fn parse_rgb_input(input: &str) -> Option<Color> {
-    let trimmed = input.trim();
-    if trimmed.starts_with('#') {
-        return Color::parse_hex(trimmed);
-    }
-
-    let parts = trimmed
-        .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
-        .filter(|part| !part.is_empty())
-        .map(str::parse::<u8>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-
-    let [r, g, b]: [u8; 3] = parts.try_into().ok()?;
-    Some(Color { r, g, b })
 }
 
 fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
@@ -2474,6 +2732,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     app.modal_tool_areas.clear();
     app.modal_action_areas.clear();
     app.modal_color_areas.clear();
+    app.modal_rgb_areas.clear();
 
     if matches!(modal, Modal::ToolMenu) {
         draw_tool_menu(frame, app);
@@ -2482,6 +2741,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
 
     if matches!(modal, Modal::ColorPicker) {
         draw_color_picker(frame, app);
+        return;
+    }
+
+    if let Modal::RgbInput { color } = modal {
+        draw_rgb_picker(frame, app, color);
         return;
     }
 
@@ -2499,9 +2763,9 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::RenameStyle { input } => ("Rename Style", format!("Style ID: {input}")),
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
-        Modal::RgbInput { input } => ("RGB Input", format!("RGB or hex: {input}")),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
         Modal::ColorPicker => unreachable!("color picker is drawn separately"),
+        Modal::RgbInput { .. } => unreachable!("RGB picker is drawn separately"),
         Modal::ToolMenu => unreachable!("tool menu is drawn separately"),
         Modal::QuitConfirm => (
             "Unsaved Changes",
@@ -2530,6 +2794,314 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     draw_modal_buttons(frame, app, area, actions);
 }
 
+fn draw_rgb_picker(frame: &mut Frame<'_>, app: &mut AppState, color: Color) {
+    let area = centered_rect(76, 18, frame.area());
+    app.modal_area = area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default().title("RGB Mixer").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        inner.width,
+        "Click or drag a slider. Use +/- for fine changes.",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let compact = inner.width < 54;
+    let preview = if compact {
+        Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(2),
+            width: inner.width.min(20),
+            height: 4,
+        }
+    } else {
+        Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(2),
+            width: 16,
+            height: 6,
+        }
+    };
+    draw_rgb_preview(frame, preview, color);
+
+    let controls = if compact {
+        Rect {
+            x: inner.x,
+            y: preview.y.saturating_add(preview.height).saturating_add(1),
+            width: inner.width,
+            height: inner.height.saturating_sub(8),
+        }
+    } else {
+        Rect {
+            x: inner.x.saturating_add(19),
+            y: inner.y.saturating_add(2),
+            width: inner.width.saturating_sub(19),
+            height: 9,
+        }
+    };
+
+    for (offset, channel) in RGB_CHANNELS.iter().enumerate() {
+        let row = Rect {
+            x: controls.x,
+            y: controls
+                .y
+                .saturating_add(u16::try_from(offset).unwrap_or(0).saturating_mul(3)),
+            width: controls.width,
+            height: 1,
+        };
+        draw_rgb_channel_row(frame, app, row, *channel, color);
+    }
+
+    let hex_line = format!(
+        "{}   RGB {}, {}, {}",
+        color.to_hex(),
+        color.r,
+        color.g,
+        color.b
+    );
+    draw_text(
+        frame,
+        inner.x,
+        inner.y + inner.height.saturating_sub(3),
+        inner.width,
+        &hex_line,
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+
+    draw_modal_buttons(
+        frame,
+        app,
+        area,
+        &[ModalAction::Confirm, ModalAction::Cancel],
+    );
+}
+
+fn draw_rgb_preview(frame: &mut Frame<'_>, area: Rect, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let style = TuiStyle::default()
+        .fg(readable_tui_text_color(color))
+        .bg(tui_color(color))
+        .add_modifier(Modifier::BOLD);
+    fill_rect(frame, area, style);
+
+    let middle = area.y.saturating_add(area.height / 2);
+    draw_text_centered(
+        frame,
+        area,
+        middle.saturating_sub(1),
+        &color.to_hex(),
+        style,
+    );
+    if area.height > 2 {
+        let rgb = format!("{},{},{}", color.r, color.g, color.b);
+        draw_text_centered(frame, area, middle.saturating_add(1), &rgb, style);
+    }
+}
+
+fn draw_rgb_channel_row(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    channel: RgbChannel,
+    color: Color,
+) {
+    if area.width < 26 || area.height == 0 {
+        return;
+    }
+
+    let label = format!("{} {:>3}", channel.short_label(), channel.value(color));
+    draw_text(
+        frame,
+        area.x,
+        area.y,
+        6,
+        &label,
+        TuiStyle::default()
+            .fg(channel_tui_color(channel))
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let button_width = 3;
+    let gap = 1;
+    let value_width = 3;
+    let dec_area = Rect {
+        x: area.x.saturating_add(7),
+        y: area.y,
+        width: button_width,
+        height: 1,
+    };
+    draw_rgb_control_button(frame, app, dec_area, "-", RgbControl::Decrement(channel));
+
+    let track_x = dec_area.x.saturating_add(button_width).saturating_add(gap);
+    let trailing_width = gap
+        .saturating_add(button_width)
+        .saturating_add(gap)
+        .saturating_add(value_width);
+    let track_width = area
+        .x
+        .saturating_add(area.width)
+        .saturating_sub(track_x)
+        .saturating_sub(trailing_width);
+    if track_width < 8 {
+        return;
+    }
+
+    let track_area = Rect {
+        x: track_x,
+        y: area.y,
+        width: track_width,
+        height: 1,
+    };
+    draw_rgb_slider(frame, app, track_area, channel, color);
+
+    let inc_area = Rect {
+        x: track_area
+            .x
+            .saturating_add(track_area.width)
+            .saturating_add(gap),
+        y: area.y,
+        width: button_width,
+        height: 1,
+    };
+    draw_rgb_control_button(frame, app, inc_area, "+", RgbControl::Increment(channel));
+
+    draw_text(
+        frame,
+        inc_area.x.saturating_add(button_width).saturating_add(gap),
+        area.y,
+        value_width,
+        &format!("{:>3}", channel.value(color)),
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+}
+
+fn draw_rgb_control_button(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    label: &str,
+    control: RgbControl,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let style = choice_style(false, app.hovered_rgb_control == Some(control));
+    fill_rect(frame, area, style);
+    draw_text_centered(frame, area, area.y, label, style);
+    app.modal_rgb_areas.push(ButtonHit {
+        action: control,
+        area,
+    });
+}
+
+fn draw_rgb_slider(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    channel: RgbChannel,
+    color: Color,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    app.modal_rgb_areas.push(ButtonHit {
+        action: RgbControl::Slider(channel),
+        area,
+    });
+
+    for offset in 0..area.width {
+        let mut preview = color;
+        channel.set_value(
+            &mut preview,
+            rgb_slider_value_for_offset(area.width, offset),
+        );
+        frame.buffer_mut()[(area.x + offset, area.y)]
+            .set_symbol(" ")
+            .set_style(TuiStyle::default().bg(tui_color(preview)));
+    }
+
+    let knob_offset = rgb_slider_offset_for_value(area.width, channel.value(color));
+    let knob_x = area
+        .x
+        .saturating_add(knob_offset.min(area.width.saturating_sub(1)));
+    let mut knob_color = color;
+    channel.set_value(&mut knob_color, channel.value(color));
+    let active = app.hovered_rgb_control == Some(RgbControl::Slider(channel))
+        || app.dragging_rgb_channel == Some(channel);
+    let symbol = if active { "◆" } else { "│" };
+    frame.buffer_mut()[(knob_x, area.y)]
+        .set_symbol(symbol)
+        .set_style(
+            TuiStyle::default()
+                .fg(readable_tui_text_color(knob_color))
+                .bg(tui_color(knob_color))
+                .add_modifier(Modifier::BOLD),
+        );
+}
+
+fn tui_color(color: Color) -> TuiColor {
+    TuiColor::Rgb(color.r, color.g, color.b)
+}
+
+fn readable_tui_text_color(color: Color) -> TuiColor {
+    let luminance =
+        (u32::from(color.r) * 299 + u32::from(color.g) * 587 + u32::from(color.b) * 114) / 1000;
+    if luminance > 150 {
+        TuiColor::Rgb(24, 28, 32)
+    } else {
+        TuiColor::Rgb(245, 248, 250)
+    }
+}
+
+fn channel_tui_color(channel: RgbChannel) -> TuiColor {
+    match channel {
+        RgbChannel::Red => TuiColor::Rgb(255, 113, 113),
+        RgbChannel::Green => TuiColor::Rgb(92, 214, 132),
+        RgbChannel::Blue => TuiColor::Rgb(105, 160, 255),
+    }
+}
+
+fn rgb_slider_value_at(area: Rect, column: u16) -> u8 {
+    if area.width <= 1 {
+        return 0;
+    }
+
+    let max_x = area.x.saturating_add(area.width.saturating_sub(1));
+    let clamped = column.clamp(area.x, max_x);
+    rgb_slider_value_for_offset(area.width, clamped.saturating_sub(area.x))
+}
+
+fn rgb_slider_value_for_offset(width: u16, offset: u16) -> u8 {
+    if width <= 1 {
+        return 0;
+    }
+
+    let denominator = u32::from(width.saturating_sub(1));
+    let value =
+        (u32::from(offset.min(width.saturating_sub(1))) * 255 + denominator / 2) / denominator;
+    value.min(255) as u8
+}
+
+fn rgb_slider_offset_for_value(width: u16, value: u8) -> u16 {
+    if width <= 1 {
+        return 0;
+    }
+
+    let max_offset = u32::from(width.saturating_sub(1));
+    ((u32::from(value) * max_offset + 127) / 255) as u16
+}
+
 fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
     let area = centered_rect(76, 24, frame.area());
     app.modal_area = area;
@@ -2544,12 +3116,12 @@ fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
         inner.x,
         inner.y,
         inner.width,
-        "Click a color. Wheel/PageUp/PageDown scroll. U opens RGB input.",
+        "Hue columns, tone rows. Wheel/PageUp/PageDown scroll. U opens RGB mixer.",
         TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
     );
 
     let grid_area = app.color_picker_grid_area();
-    let columns = palette_columns(grid_area.width, COLOR_SLOT_WIDTH).max(1);
+    let columns = app.color_picker_columns().max(1);
     let visible_rows = grid_area.height;
     let start_index = app.color_picker_scroll_row * usize::from(columns);
     let visible_count = usize::from(columns) * usize::from(visible_rows);
@@ -2565,7 +3137,7 @@ fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
         selected_color,
         hovered_visible_index,
         visible_count.min(MORE_COLOR_COUNT.saturating_sub(start_index)),
-        |offset| color_cube_color(start_index + offset),
+        |offset| expanded_palette_color(start_index + offset),
     );
 
     for offset in 0..visible_count.min(MORE_COLOR_COUNT.saturating_sub(start_index)) {
@@ -2729,9 +3301,8 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::RenameStyle { input }
         | Modal::SetFg { input }
         | Modal::SetBg { input }
-        | Modal::RgbInput { input }
         | Modal::ExportText { input } => Some(input),
-        Modal::ColorPicker | Modal::ToolMenu | Modal::QuitConfirm => None,
+        Modal::RgbInput { .. } | Modal::ColorPicker | Modal::ToolMenu | Modal::QuitConfirm => None,
     }
 }
 
@@ -2974,32 +3545,57 @@ mod tests {
     }
 
     #[test]
-    fn rgb_input_accepts_comma_space_and_hex_forms() {
-        assert_eq!(
-            parse_rgb_input("255,128,0"),
-            Some(Color {
-                r: 255,
-                g: 128,
-                b: 0
+    fn expanded_palette_is_arranged_as_hue_columns() {
+        let red_dark = expanded_palette_color(0);
+        let red_lighter = expanded_palette_color(EXPANDED_HUE_COUNT);
+        let blue_dark = expanded_palette_color(9);
+
+        assert_ne!(red_dark, red_lighter);
+        assert!(red_dark.r > red_dark.b);
+        assert!(blue_dark.b > blue_dark.r);
+    }
+
+    #[test]
+    fn rgb_slider_maps_mouse_columns_to_values() {
+        let area = Rect {
+            x: 10,
+            y: 2,
+            width: 11,
+            height: 1,
+        };
+
+        assert_eq!(rgb_slider_value_at(area, 0), 0);
+        assert_eq!(rgb_slider_value_at(area, 10), 0);
+        assert_eq!(rgb_slider_value_at(area, 15), 128);
+        assert_eq!(rgb_slider_value_at(area, 20), 255);
+        assert_eq!(rgb_slider_value_at(area, 99), 255);
+    }
+
+    #[test]
+    fn rgb_slider_control_updates_modal_color() {
+        let mut app = AppState::editor(Project::new_image("rgb", 4, 2), None, false, "");
+        app.modal = Some(Modal::RgbInput {
+            color: Color { r: 0, g: 0, b: 0 },
+        });
+        app.modal_rgb_areas.push(ButtonHit {
+            action: RgbControl::Slider(RgbChannel::Red),
+            area: Rect {
+                x: 10,
+                y: 1,
+                width: 11,
+                height: 1,
+            },
+        });
+
+        app.apply_rgb_control(RgbControl::Slider(RgbChannel::Red), 20);
+
+        assert_eq!(app.dragging_rgb_channel, Some(RgbChannel::Red));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::RgbInput {
+                color: Color { r: 255, g: 0, b: 0 }
             })
-        );
-        assert_eq!(
-            parse_rgb_input("12 34 56"),
-            Some(Color {
-                r: 12,
-                g: 34,
-                b: 56
-            })
-        );
-        assert_eq!(
-            parse_rgb_input("#0A0B0C"),
-            Some(Color {
-                r: 10,
-                g: 11,
-                b: 12
-            })
-        );
-        assert_eq!(parse_rgb_input("255,0"), None);
+        ));
     }
 
     #[test]
