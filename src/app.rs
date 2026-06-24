@@ -387,6 +387,25 @@ impl Tool {
             Self::FilledRectangle => "Drag to draw a filled rectangle",
         }
     }
+
+    fn shortcut(self) -> &'static str {
+        match self {
+            Self::Pencil => "P",
+            Self::Eraser => "E",
+            Self::Eyedropper => "I",
+            Self::Fill => "F",
+            Self::Selection => "V",
+            Self::Stamp => "S",
+            Self::Text => "T",
+            Self::Line => "L",
+            Self::Rectangle => "H",
+            Self::FilledRectangle => "J",
+        }
+    }
+
+    fn is_shape(self) -> bool {
+        matches!(self, Self::Line | Self::Rectangle | Self::FilledRectangle)
+    }
 }
 
 const TOOL_CHOICES: &[Tool] = &[
@@ -1612,10 +1631,7 @@ impl AppState {
                     self.open_text_input_at_screen(mouse.column, mouse.row);
                     return;
                 }
-                if matches!(
-                    self.tool,
-                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
-                ) {
+                if self.tool.is_shape() {
                     self.begin_shape_mouse(mouse.column, mouse.row);
                     return;
                 }
@@ -1629,10 +1645,7 @@ impl AppState {
                     self.update_selection_mouse(mouse.column, mouse.row);
                     return;
                 }
-                if matches!(
-                    self.tool,
-                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
-                ) {
+                if self.tool.is_shape() {
                     self.update_shape_mouse(mouse.column, mouse.row);
                     return;
                 }
@@ -1647,10 +1660,7 @@ impl AppState {
             MouseEventKind::Up(MouseButton::Left) => {
                 if matches!(self.tool, Tool::Selection) {
                     self.finish_selection_mouse();
-                } else if matches!(
-                    self.tool,
-                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
-                ) {
+                } else if self.tool.is_shape() {
                     self.finish_shape_mouse();
                 } else {
                     self.finish_stroke();
@@ -5054,22 +5064,10 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
         let style = choice_style(selected, hovered);
         fill_rect(frame, row, style);
 
-        let shortcut = match tool {
-            Tool::Pencil => "P",
-            Tool::Eraser => "E",
-            Tool::Eyedropper => "I",
-            Tool::Fill => "F",
-            Tool::Selection => "V",
-            Tool::Stamp => "S",
-            Tool::Text => "T",
-            Tool::Line => "L",
-            Tool::Rectangle => "H",
-            Tool::FilledRectangle => "J",
-        };
         let label = format!(
             "{}  {}  {:<10} {}",
             index + 1,
-            shortcut,
+            tool.shortcut(),
             tool.label(),
             tool.description()
         );
