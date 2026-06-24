@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_NEW_WIDTH: u16 = 48;
 const DEFAULT_NEW_HEIGHT: u16 = 16;
@@ -279,13 +279,14 @@ pub fn run_interactive(initial: Startup) -> Result<()> {
     let mut app = AppState::from_startup(initial);
 
     loop {
+        app.advance_playback(Instant::now());
         terminal.terminal.draw(|frame| draw(frame, &mut app))?;
 
         if app.should_quit {
             break;
         }
 
-        if event::poll(Duration::from_millis(40))? {
+        if event::poll(app.event_poll_timeout(Instant::now()))? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key),
                 Event::Mouse(mouse) => app.handle_mouse(mouse),
@@ -403,6 +404,7 @@ enum TopAction {
     NextFrame,
     DuplicateFrame,
     BlankFrame,
+    TogglePlayback,
     ToggleOnionSkin,
     Save,
     SaveAs,
@@ -417,6 +419,7 @@ impl TopAction {
             Self::NextFrame => "Next",
             Self::DuplicateFrame => "Dup",
             Self::BlankFrame => "Blank",
+            Self::TogglePlayback => "Play",
             Self::ToggleOnionSkin => "Onion",
             Self::Save => "Save",
             Self::SaveAs => "Save As",
@@ -431,6 +434,7 @@ const TOP_ACTIONS: &[TopAction] = &[
     TopAction::NextFrame,
     TopAction::DuplicateFrame,
     TopAction::BlankFrame,
+    TopAction::TogglePlayback,
     TopAction::ToggleOnionSkin,
     TopAction::Save,
     TopAction::SaveAs,
@@ -730,6 +734,8 @@ struct AppState {
     current_style: usize,
     current_frame_index: usize,
     onion_skin: bool,
+    playing: bool,
+    next_playback_step: Option<Instant>,
     selection: Option<CellRect>,
     selection_drag_anchor: Option<(u16, u16)>,
     moving_selection: Option<MovingSelection>,
@@ -837,6 +843,8 @@ impl AppState {
             current_style: 0,
             current_frame_index: 0,
             onion_skin: false,
+            playing: false,
+            next_playback_step: None,
             selection: None,
             selection_drag_anchor: None,
             moving_selection: None,
@@ -906,6 +914,8 @@ impl AppState {
             current_style: 0,
             current_frame_index: 0,
             onion_skin: false,
+            playing: false,
+            next_playback_step: None,
             selection: None,
             selection_drag_anchor: None,
             moving_selection: None,
@@ -1060,6 +1070,7 @@ impl AppState {
         }
 
         match key.code {
+            KeyCode::Char(' ') => self.toggle_playback(Instant::now()),
             KeyCode::Right if self.can_nudge_selection() => self.nudge_selection(1, 0),
             KeyCode::Left if self.can_nudge_selection() => self.nudge_selection(-1, 0),
             KeyCode::Up if self.can_nudge_selection() => self.nudge_selection(0, -1),
@@ -2677,6 +2688,7 @@ impl AppState {
 
     fn previous_frame_or_message(&mut self) {
         self.finish_stroke();
+        self.pause_playback();
         if self.current_frame_index == 0 {
             self.message = "Already on first frame".to_string();
             return;
@@ -2689,6 +2701,7 @@ impl AppState {
 
     fn next_frame_or_create(&mut self) {
         self.finish_stroke();
+        self.pause_playback();
         if self.current_frame_index + 1 < self.project.frames.len() {
             self.current_frame_index += 1;
             self.reset_selection_state();
@@ -2701,11 +2714,13 @@ impl AppState {
 
     fn duplicate_current_frame(&mut self) {
         self.finish_stroke();
+        self.pause_playback();
         self.insert_frame_after_current(self.current_frame().cells.clone(), "Duplicated frame");
     }
 
     fn insert_blank_frame(&mut self) {
         self.finish_stroke();
+        self.pause_playback();
         self.insert_frame_after_current(BTreeMap::new(), "Added blank frame");
     }
 
@@ -2744,6 +2759,85 @@ impl AppState {
         };
     }
 
+    fn toggle_playback(&mut self, now: Instant) {
+        if self.playing {
+            self.pause_playback();
+            self.message = "Playback paused".to_string();
+            return;
+        }
+
+        if self.project.frames.len() < 2 {
+            self.message = "Need multiple frames to play".to_string();
+            return;
+        }
+
+        self.playing = true;
+        self.schedule_next_playback_step(now);
+        self.reset_selection_state();
+        self.message = "Playback started".to_string();
+    }
+
+    fn pause_playback(&mut self) {
+        self.playing = false;
+        self.next_playback_step = None;
+    }
+
+    fn schedule_next_playback_step(&mut self, now: Instant) {
+        self.next_playback_step = Some(now + self.current_frame_duration());
+    }
+
+    fn current_frame_duration(&self) -> Duration {
+        Duration::from_millis(self.current_frame().duration_ms.max(1))
+    }
+
+    fn advance_playback(&mut self, now: Instant) {
+        if !self.playing || self.screen != Screen::Editor || self.project.frames.len() < 2 {
+            return;
+        }
+
+        let Some(mut next_step) = self.next_playback_step else {
+            self.schedule_next_playback_step(now);
+            return;
+        };
+
+        let max_steps = self.project.frames.len().saturating_mul(4).max(1);
+        let mut steps = 0usize;
+        while now >= next_step && steps < max_steps {
+            if self.current_frame_index + 1 >= self.project.frames.len() {
+                if self.project.asset.loop_animation {
+                    self.current_frame_index = 0;
+                } else {
+                    self.pause_playback();
+                    self.message = "Playback finished".to_string();
+                    return;
+                }
+            } else {
+                self.current_frame_index += 1;
+            }
+
+            self.reset_selection_state();
+            next_step += self.current_frame_duration();
+            steps += 1;
+        }
+
+        self.next_playback_step = Some(next_step);
+    }
+
+    fn event_poll_timeout(&self, now: Instant) -> Duration {
+        let default_timeout = Duration::from_millis(40);
+        if !self.playing {
+            return default_timeout;
+        }
+
+        self.next_playback_step
+            .map(|next_step| {
+                next_step
+                    .saturating_duration_since(now)
+                    .min(default_timeout)
+            })
+            .unwrap_or(Duration::ZERO)
+    }
+
     fn frame_position_message(&self, prefix: &str) -> String {
         format!(
             "{prefix} {}/{}",
@@ -2758,6 +2852,7 @@ impl AppState {
             TopAction::NextFrame => self.next_frame_or_create(),
             TopAction::DuplicateFrame => self.duplicate_current_frame(),
             TopAction::BlankFrame => self.insert_blank_frame(),
+            TopAction::TogglePlayback => self.toggle_playback(Instant::now()),
             TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
             TopAction::Save => self.save(),
             TopAction::SaveAs => self.open_save_as(),
@@ -3094,8 +3189,9 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     } else {
         "onion off"
     };
+    let playback = if app.playing { "playing" } else { "paused" };
     let text = format!(
-        " {}{} | {}x{} | {} | frame {}/{} | {} cells | {}",
+        " {}{} | {}x{} | {} | frame {}/{} | {} cells | {} | {}",
         path,
         dirty,
         app.project.asset.width,
@@ -3104,7 +3200,8 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         app.current_frame_index + 1,
         app.project.frames.len(),
         app.current_frame().cells.len(),
-        onion
+        onion,
+        playback
     );
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
@@ -3114,7 +3211,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let mut x = inner.x + inner.width;
     let mut buttons = Vec::new();
     for action in TOP_ACTIONS.iter().rev() {
-        let label = format!("[{}]", action.label());
+        let label = format!("[{}]", top_action_label(*action, app));
         let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
         if width + TOP_BUTTON_GAP > x.saturating_sub(inner.x) {
             continue;
@@ -3148,6 +3245,14 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         };
         draw_text(frame, area.x, area.y, area.width, &label, style);
         app.top_action_areas.push(ButtonHit { action, area });
+    }
+}
+
+fn top_action_label(action: TopAction, app: &AppState) -> &'static str {
+    if action == TopAction::TogglePlayback && app.playing {
+        "Pause"
+    } else {
+        action.label()
     }
 }
 
@@ -4244,7 +4349,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     let help =
-        "V select | drag selection to move | Ctrl-C/X copy/cut | Stamp tool pastes | N/Right next";
+        "Space play/pause | V select | drag selection to move | Ctrl-C/X copy/cut | N/Right next";
     let lines = vec![
         Line::from(help),
         Line::from(app.message.as_str()),
@@ -5559,6 +5664,64 @@ mod tests {
             }
         );
         assert!(app.dirty);
+    }
+
+    #[test]
+    fn playback_advances_frames_by_duration_and_loops() {
+        let mut app = AppState::editor(Project::new_image("play", 4, 2), None, false, "");
+        app.insert_blank_frame();
+        app.project.frames[0].duration_ms = 100;
+        app.project.frames[1].duration_ms = 200;
+        app.current_frame_index = 0;
+        let start = Instant::now();
+
+        app.toggle_playback(start);
+
+        assert!(app.playing);
+        app.advance_playback(start + Duration::from_millis(99));
+        assert_eq!(app.current_frame_index, 0);
+
+        app.advance_playback(start + Duration::from_millis(100));
+        assert_eq!(app.current_frame_index, 1);
+
+        app.advance_playback(start + Duration::from_millis(299));
+        assert_eq!(app.current_frame_index, 1);
+
+        app.advance_playback(start + Duration::from_millis(300));
+        assert_eq!(app.current_frame_index, 0);
+        assert!(app.playing);
+    }
+
+    #[test]
+    fn playback_stops_at_end_when_looping_is_disabled() {
+        let mut app = AppState::editor(Project::new_image("play", 4, 2), None, false, "");
+        app.insert_blank_frame();
+        app.project.asset.loop_animation = false;
+        app.project.frames[0].duration_ms = 100;
+        app.project.frames[1].duration_ms = 100;
+        app.current_frame_index = 0;
+        let start = Instant::now();
+
+        app.toggle_playback(start);
+        app.advance_playback(start + Duration::from_millis(100));
+        app.advance_playback(start + Duration::from_millis(200));
+
+        assert_eq!(app.current_frame_index, 1);
+        assert!(!app.playing);
+        assert_eq!(app.message, "Playback finished");
+    }
+
+    #[test]
+    fn manual_frame_navigation_pauses_playback() {
+        let mut app = AppState::editor(Project::new_image("play", 4, 2), None, false, "");
+        app.insert_blank_frame();
+        app.current_frame_index = 0;
+        app.toggle_playback(Instant::now());
+
+        app.next_frame_or_create();
+
+        assert!(!app.playing);
+        assert_eq!(app.next_playback_step, None);
     }
 
     #[test]
