@@ -351,6 +351,8 @@ enum Tool {
     Selection,
     Stamp,
     Text,
+    Line,
+    Rectangle,
 }
 
 impl Tool {
@@ -363,6 +365,8 @@ impl Tool {
             Self::Selection => "Select",
             Self::Stamp => "Stamp",
             Self::Text => "Text",
+            Self::Line => "Line",
+            Self::Rectangle => "Rect",
         }
     }
 
@@ -375,6 +379,8 @@ impl Tool {
             Self::Selection => "Drag, move, copy, cut, or stamp a region",
             Self::Stamp => "Paste the current stamp",
             Self::Text => "Place a typed string on the canvas",
+            Self::Line => "Drag to draw a straight line",
+            Self::Rectangle => "Drag to draw a rectangle outline",
         }
     }
 }
@@ -387,6 +393,8 @@ const TOOL_CHOICES: &[Tool] = &[
     Tool::Selection,
     Tool::Stamp,
     Tool::Text,
+    Tool::Line,
+    Tool::Rectangle,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,6 +687,13 @@ struct MovingSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShapeDrag {
+    tool: Tool,
+    start: (u16, u16),
+    end: (u16, u16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaletteHover {
     Color(usize),
     Character(usize),
@@ -697,6 +712,7 @@ struct AppState {
     selection: Option<CellRect>,
     selection_drag_anchor: Option<(u16, u16)>,
     moving_selection: Option<MovingSelection>,
+    shape_drag: Option<ShapeDrag>,
     stamps: Vec<Stamp>,
     current_stamp_index: Option<usize>,
     canvas_area: Rect,
@@ -800,6 +816,7 @@ impl AppState {
             selection: None,
             selection_drag_anchor: None,
             moving_selection: None,
+            shape_drag: None,
             stamps: Vec::new(),
             current_stamp_index: None,
             canvas_area: Rect::default(),
@@ -865,6 +882,7 @@ impl AppState {
             selection: None,
             selection_drag_anchor: None,
             moving_selection: None,
+            shape_drag: None,
             stamps: Vec::new(),
             current_stamp_index: None,
             canvas_area: Rect::default(),
@@ -1052,6 +1070,12 @@ impl AppState {
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.select_tool(Tool::Text);
             }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                self.select_tool(Tool::Line);
+            }
+            KeyCode::Char('h') | KeyCode::Char('H') => {
+                self.select_tool(Tool::Rectangle);
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.modal = Some(Modal::BrushChar {
                     input: self.brush_char.to_string(),
@@ -1144,6 +1168,12 @@ impl AppState {
                 }
                 KeyCode::Char('7') | KeyCode::Char('t') | KeyCode::Char('T') => {
                     self.select_tool_from_menu(Tool::Text);
+                }
+                KeyCode::Char('8') | KeyCode::Char('l') | KeyCode::Char('L') => {
+                    self.select_tool_from_menu(Tool::Line);
+                }
+                KeyCode::Char('9') | KeyCode::Char('h') | KeyCode::Char('H') => {
+                    self.select_tool_from_menu(Tool::Rectangle);
                 }
                 _ => {}
             }
@@ -1492,6 +1522,10 @@ impl AppState {
                     self.open_text_input_at_screen(mouse.column, mouse.row);
                     return;
                 }
+                if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                    self.begin_shape_mouse(mouse.column, mouse.row);
+                    return;
+                }
                 if matches!(self.tool, Tool::Pencil | Tool::Eraser) {
                     self.active_stroke = Some(Stroke::new(self.current_frame_index));
                 }
@@ -1500,6 +1534,10 @@ impl AppState {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if matches!(self.tool, Tool::Selection) {
                     self.update_selection_mouse(mouse.column, mouse.row);
+                    return;
+                }
+                if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                    self.update_shape_mouse(mouse.column, mouse.row);
                     return;
                 }
                 if !matches!(self.tool, Tool::Pencil | Tool::Eraser) {
@@ -1513,6 +1551,8 @@ impl AppState {
             MouseEventKind::Up(MouseButton::Left) => {
                 if matches!(self.tool, Tool::Selection) {
                     self.finish_selection_mouse();
+                } else if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                    self.finish_shape_mouse();
                 } else {
                     self.finish_stroke();
                 }
@@ -1968,6 +2008,7 @@ impl AppState {
         self.selection = None;
         self.selection_drag_anchor = None;
         self.moving_selection = None;
+        self.shape_drag = None;
     }
 
     fn select_stamp_tool(&mut self) {
@@ -2022,6 +2063,49 @@ impl AppState {
         if written < text.chars().count() {
             self.message = format!("Placed text ({written} chars, clipped)");
         }
+    }
+
+    fn begin_shape_mouse(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+        self.shape_drag = Some(ShapeDrag {
+            tool: self.tool,
+            start: (x, y),
+            end: (x, y),
+        });
+        self.message = format!("Drag to draw {}", self.tool.label().to_lowercase());
+    }
+
+    fn update_shape_mouse(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+        if let Some(shape) = self.shape_drag.as_mut() {
+            shape.end = (x, y);
+        }
+    }
+
+    fn finish_shape_mouse(&mut self) {
+        let Some(shape) = self.shape_drag.take() else {
+            return;
+        };
+        self.draw_shape(shape);
+    }
+
+    fn draw_shape(&mut self, shape: ShapeDrag) {
+        let points = shape_points(shape.tool, shape.start, shape.end);
+        let mut updates = BTreeMap::new();
+        for (x, y) in points {
+            updates.insert(
+                (y, x),
+                Some(PaintedCell {
+                    ch: self.brush_char,
+                    style_index: self.current_style,
+                }),
+            );
+        }
+        self.apply_cell_updates(updates, "Drew shape");
     }
 
     fn paste_stamp_at(&mut self, x: u16, y: u16) {
@@ -2324,7 +2408,7 @@ impl AppState {
                 }
             }
             Tool::Fill => self.fill_at(x, y),
-            Tool::Selection | Tool::Stamp | Tool::Text => {}
+            Tool::Selection | Tool::Stamp | Tool::Text | Tool::Line | Tool::Rectangle => {}
         }
     }
 
@@ -3526,6 +3610,58 @@ fn offset_coord(value: u16, delta: i16, max_value: u16) -> u16 {
     }
 }
 
+fn shape_points(tool: Tool, start: (u16, u16), end: (u16, u16)) -> BTreeSet<(u16, u16)> {
+    match tool {
+        Tool::Line => line_points(start, end),
+        Tool::Rectangle => rectangle_points(CellRect::from_points(start, end)),
+        _ => BTreeSet::new(),
+    }
+}
+
+fn line_points(start: (u16, u16), end: (u16, u16)) -> BTreeSet<(u16, u16)> {
+    let mut points = BTreeSet::new();
+    let (mut x0, mut y0) = (i32::from(start.0), i32::from(start.1));
+    let (x1, y1) = (i32::from(end.0), i32::from(end.1));
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+
+    loop {
+        if let (Ok(x), Ok(y)) = (u16::try_from(x0), u16::try_from(y0)) {
+            points.insert((x, y));
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+
+        let double_error = 2 * error;
+        if double_error >= dy {
+            error += dy;
+            x0 += sx;
+        }
+        if double_error <= dx {
+            error += dx;
+            y0 += sy;
+        }
+    }
+
+    points
+}
+
+fn rectangle_points(rect: CellRect) -> BTreeSet<(u16, u16)> {
+    let mut points = BTreeSet::new();
+    for y in rect.y..rect.y.saturating_add(rect.height) {
+        for x in rect.x..rect.x.saturating_add(rect.width) {
+            if rect.is_border(x, y) {
+                points.insert((x, y));
+            }
+        }
+    }
+    points
+}
+
 fn fill_rect(frame: &mut Frame<'_>, area: Rect, style: TuiStyle) {
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
@@ -3806,6 +3942,9 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 
     let visible_width = app.project.asset.width.min(inner.width);
     let visible_height = app.project.asset.height.min(inner.height);
+    let shape_preview = app
+        .shape_drag
+        .map(|shape| shape_points(shape.tool, shape.start, shape.end));
 
     for y in 0..visible_height {
         for x in 0..visible_width {
@@ -3823,7 +3962,16 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
                 }
             });
 
-            if let Some(cell) = moving_preview_cell {
+            if shape_preview
+                .as_ref()
+                .is_some_and(|points| points.contains(&(x, y)))
+            {
+                let style = style_to_tui(&app.project.styles[app.current_style])
+                    .bg(TuiColor::Rgb(50, 67, 94));
+                let symbol = app.brush_char.to_string();
+                buffer_cell.set_symbol(&symbol);
+                buffer_cell.set_style(style);
+            } else if let Some(cell) = moving_preview_cell {
                 let style = style_to_tui(&app.project.styles[cell.style_index])
                     .bg(TuiColor::Rgb(69, 55, 98));
                 let symbol = cell.ch.to_string();
@@ -4499,6 +4647,8 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
             Tool::Selection => "V",
             Tool::Stamp => "S",
             Tool::Text => "T",
+            Tool::Line => "L",
+            Tool::Rectangle => "H",
         };
         let label = format!(
             "{}  {}  {:<10} {}",
@@ -5067,6 +5217,44 @@ mod tests {
 
         assert!(matches!(app.modal, Some(Modal::TextInput { .. })));
         assert!(app.message.contains("invalid V1 character"));
+    }
+
+    #[test]
+    fn line_tool_draws_diagonal_as_one_undoable_edit() {
+        let mut app = AppState::editor(Project::new_image("line", 3, 3), None, false, "");
+        app.brush_char = '*';
+
+        app.draw_shape(ShapeDrag {
+            tool: Tool::Line,
+            start: (0, 0),
+            end: (2, 2),
+        });
+
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, '*');
+        assert_eq!(app.current_frame().cells[&(1, 1)].ch, '*');
+        assert_eq!(app.current_frame().cells[&(2, 2)].ch, '*');
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo();
+
+        assert!(app.current_frame().cells.is_empty());
+    }
+
+    #[test]
+    fn rectangle_tool_draws_outline_only() {
+        let mut app = AppState::editor(Project::new_image("rect", 4, 3), None, false, "");
+        app.brush_char = '#';
+
+        app.draw_shape(ShapeDrag {
+            tool: Tool::Rectangle,
+            start: (0, 0),
+            end: (3, 2),
+        });
+
+        assert_eq!(app.current_frame().cells.len(), 10);
+        assert_eq!(app.current_frame().cells[&(0, 0)].ch, '#');
+        assert_eq!(app.current_frame().cells[&(2, 3)].ch, '#');
+        assert!(!app.current_frame().cells.contains_key(&(1, 1)));
     }
 
     #[test]
