@@ -39,6 +39,8 @@ rewriting the art in Rust.
 - Still image and basic animation editing with frame navigation, duplicate,
   blank/delete frame, per-frame duration editing, duration-based playback, and
   previous-frame onion skin.
+- Clickable top-bar actions for frame controls, playback, undo/redo, save,
+  export, and quit.
 - Save/load for canonical `.tanim.toml` files with save-as overwrite
   confirmation.
 - Plain text and ANSI export from the interactive app and CLI:

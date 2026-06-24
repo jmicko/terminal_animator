@@ -412,6 +412,8 @@ enum TopAction {
     SetFrameDuration,
     TogglePlayback,
     ToggleOnionSkin,
+    Undo,
+    Redo,
     Save,
     SaveAs,
     ExportText,
@@ -429,6 +431,8 @@ impl TopAction {
             Self::SetFrameDuration => "Dur",
             Self::TogglePlayback => "Play",
             Self::ToggleOnionSkin => "Onion",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
             Self::Save => "Save",
             Self::SaveAs => "Save As",
             Self::ExportText => "Export",
@@ -446,6 +450,8 @@ const TOP_ACTIONS: &[TopAction] = &[
     TopAction::SetFrameDuration,
     TopAction::TogglePlayback,
     TopAction::ToggleOnionSkin,
+    TopAction::Undo,
+    TopAction::Redo,
     TopAction::Save,
     TopAction::SaveAs,
     TopAction::ExportText,
@@ -2942,6 +2948,8 @@ impl AppState {
             TopAction::SetFrameDuration => self.open_frame_duration(),
             TopAction::TogglePlayback => self.toggle_playback(Instant::now()),
             TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
+            TopAction::Undo => self.undo(),
+            TopAction::Redo => self.redo(),
             TopAction::Save => self.save(),
             TopAction::SaveAs => self.open_save_as(),
             TopAction::ExportText => self.open_export_menu(),
@@ -5954,6 +5962,26 @@ mod tests {
 
         assert_eq!(app.current_frame_index, 1);
         assert!(!app.project.frames[1].cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn top_bar_undo_and_redo_actions_use_history() {
+        let mut app = AppState::editor(Project::new_image("undo", 4, 2), None, false, "");
+        app.set_cell_for_stroke(
+            1,
+            0,
+            Some(PaintedCell {
+                ch: '#',
+                style_index: 0,
+            }),
+        );
+        app.finish_stroke();
+
+        app.run_top_action(TopAction::Undo);
+        assert!(!app.current_frame().cells.contains_key(&(0, 1)));
+
+        app.run_top_action(TopAction::Redo);
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, '#');
     }
 
     #[test]
