@@ -404,6 +404,7 @@ enum TopAction {
     NextFrame,
     DuplicateFrame,
     BlankFrame,
+    SetFrameDuration,
     TogglePlayback,
     ToggleOnionSkin,
     Save,
@@ -419,6 +420,7 @@ impl TopAction {
             Self::NextFrame => "Next",
             Self::DuplicateFrame => "Dup",
             Self::BlankFrame => "Blank",
+            Self::SetFrameDuration => "Dur",
             Self::TogglePlayback => "Play",
             Self::ToggleOnionSkin => "Onion",
             Self::Save => "Save",
@@ -434,6 +436,7 @@ const TOP_ACTIONS: &[TopAction] = &[
     TopAction::NextFrame,
     TopAction::DuplicateFrame,
     TopAction::BlankFrame,
+    TopAction::SetFrameDuration,
     TopAction::TogglePlayback,
     TopAction::ToggleOnionSkin,
     TopAction::Save,
@@ -619,6 +622,9 @@ enum Modal {
         input: String,
     },
     SetBg {
+        input: String,
+    },
+    FrameDuration {
         input: String,
     },
     RgbInput {
@@ -1093,6 +1099,9 @@ impl AppState {
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 self.insert_blank_frame();
             }
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                self.open_frame_duration();
+            }
             KeyCode::Char('o') | KeyCode::Char('O') => {
                 self.toggle_onion_skin();
             }
@@ -1461,6 +1470,17 @@ impl AppState {
                     self.modal = Some(Modal::SetBg { input });
                 }
             }
+            Modal::FrameDuration { input } => match input.trim().parse::<u64>() {
+                Ok(duration_ms) if duration_ms > 0 => {
+                    self.current_frame_mut().duration_ms = duration_ms;
+                    self.dirty = true;
+                    self.message = format!("Frame duration set to {duration_ms} ms");
+                }
+                _ => {
+                    self.message = "Frame duration must be positive milliseconds".to_string();
+                    self.modal = Some(Modal::FrameDuration { input });
+                }
+            },
             Modal::RgbInput { color } => {
                 let target = self.color_target;
                 self.select_custom_color(color, false);
@@ -2852,6 +2872,7 @@ impl AppState {
             TopAction::NextFrame => self.next_frame_or_create(),
             TopAction::DuplicateFrame => self.duplicate_current_frame(),
             TopAction::BlankFrame => self.insert_blank_frame(),
+            TopAction::SetFrameDuration => self.open_frame_duration(),
             TopAction::TogglePlayback => self.toggle_playback(Instant::now()),
             TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
             TopAction::Save => self.save(),
@@ -3005,6 +3026,14 @@ impl AppState {
         self.modal = Some(Modal::ExportAnsi {
             input: default.display().to_string(),
         });
+    }
+
+    fn open_frame_duration(&mut self) {
+        self.pause_playback();
+        self.modal = Some(Modal::FrameDuration {
+            input: self.current_frame().duration_ms.to_string(),
+        });
+        self.message = "Edit frame duration in milliseconds".to_string();
     }
 
     fn save(&mut self) {
@@ -3191,7 +3220,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     };
     let playback = if app.playing { "playing" } else { "paused" };
     let text = format!(
-        " {}{} | {}x{} | {} | frame {}/{} | {} cells | {} | {}",
+        " {}{} | {}x{} | {} | frame {}/{} @ {}ms | {} cells | {} | {}",
         path,
         dirty,
         app.project.asset.width,
@@ -3199,6 +3228,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         kind,
         app.current_frame_index + 1,
         app.project.frames.len(),
+        app.current_frame().duration_ms,
         app.current_frame().cells.len(),
         onion,
         playback
@@ -4349,7 +4379,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     let help =
-        "Space play/pause | V select | drag selection to move | Ctrl-C/X copy/cut | N/Right next";
+        "Space play/pause | W duration | V select | drag selection to move | Ctrl-C/X copy/cut";
     let lines = vec![
         Line::from(help),
         Line::from(app.message.as_str()),
@@ -4435,6 +4465,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::RenameStyle { input } => ("Rename Style", format!("Style ID: {input}")),
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
+        Modal::FrameDuration { input } => ("Frame Duration", format!("Milliseconds: {input}")),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
         Modal::ExportAnsi { input } => ("Export ANSI", format!("Path: {input}")),
         Modal::ColorPicker => unreachable!("color picker is drawn separately"),
@@ -4995,6 +5026,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::RenameStyle { input }
         | Modal::SetFg { input }
         | Modal::SetBg { input }
+        | Modal::FrameDuration { input }
         | Modal::ExportText { input }
         | Modal::ExportAnsi { input } => Some(input),
         Modal::OverwriteConfirm { .. }
@@ -5722,6 +5754,33 @@ mod tests {
 
         assert!(!app.playing);
         assert_eq!(app.next_playback_step, None);
+    }
+
+    #[test]
+    fn frame_duration_modal_updates_current_frame() {
+        let mut app = AppState::editor(Project::new_image("duration", 4, 2), None, false, "");
+
+        app.commit_modal(Modal::FrameDuration {
+            input: "750".to_string(),
+        });
+
+        assert_eq!(app.current_frame().duration_ms, 750);
+        assert!(app.dirty);
+        assert_eq!(app.message, "Frame duration set to 750 ms");
+    }
+
+    #[test]
+    fn frame_duration_modal_rejects_non_positive_values() {
+        let mut app = AppState::editor(Project::new_image("duration", 4, 2), None, false, "");
+        let original_duration = app.current_frame().duration_ms;
+
+        app.commit_modal(Modal::FrameDuration {
+            input: "0".to_string(),
+        });
+
+        assert_eq!(app.current_frame().duration_ms, original_duration);
+        assert!(matches!(app.modal, Some(Modal::FrameDuration { .. })));
+        assert!(app.message.contains("positive milliseconds"));
     }
 
     #[test]

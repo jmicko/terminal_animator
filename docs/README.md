@@ -36,7 +36,8 @@ rewriting the art in Rust.
 - Rectangle selection with copy, cut, delete, move, and reusable stamp paste
   workflows.
 - Still image and basic animation editing with frame navigation, duplicate,
-  blank frame, duration-based playback, and previous-frame onion skin.
+  blank frame, per-frame duration editing, duration-based playback, and
+  previous-frame onion skin.
 - Save/load for canonical `.tanim.toml` files with save-as overwrite
   confirmation.
 - Plain text and ANSI export from the interactive app and CLI:
