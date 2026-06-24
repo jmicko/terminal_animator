@@ -4791,7 +4791,7 @@ fn draw_modal_buttons(
 }
 
 fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
-    let area = centered_rect(62, 10, frame.area());
+    let area = centered_rect(70, tool_menu_height(), frame.area());
     app.modal_area = area;
     frame.render_widget(Clear, area);
 
@@ -4804,7 +4804,7 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
         inner.x,
         inner.y,
         inner.width,
-        "Click a row or press P, E, I",
+        "Click a row or press its shortcut",
         TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
     );
 
@@ -4850,6 +4850,12 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
         });
         y = y.saturating_add(1);
     }
+}
+
+fn tool_menu_height() -> u16 {
+    u16::try_from(TOOL_CHOICES.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
 }
 
 fn style_to_tui(style: &TerminalStyle) -> TuiStyle {
@@ -5283,6 +5289,14 @@ mod tests {
         assert_eq!(app.tool, Tool::Eraser);
         assert!(app.modal.is_none());
         assert_eq!(app.message, "Eraser selected");
+    }
+
+    #[test]
+    fn tool_menu_height_fits_every_tool_row() {
+        let menu_height = tool_menu_height();
+        let usable_rows = menu_height.saturating_sub(4);
+
+        assert!(usize::from(usable_rows) >= TOOL_CHOICES.len());
     }
 
     #[test]
