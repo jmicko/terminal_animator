@@ -404,6 +404,7 @@ enum TopAction {
     NextFrame,
     DuplicateFrame,
     BlankFrame,
+    DeleteFrame,
     SetFrameDuration,
     TogglePlayback,
     ToggleOnionSkin,
@@ -420,6 +421,7 @@ impl TopAction {
             Self::NextFrame => "Next",
             Self::DuplicateFrame => "Dup",
             Self::BlankFrame => "Blank",
+            Self::DeleteFrame => "Del",
             Self::SetFrameDuration => "Dur",
             Self::TogglePlayback => "Play",
             Self::ToggleOnionSkin => "Onion",
@@ -436,6 +438,7 @@ const TOP_ACTIONS: &[TopAction] = &[
     TopAction::NextFrame,
     TopAction::DuplicateFrame,
     TopAction::BlankFrame,
+    TopAction::DeleteFrame,
     TopAction::SetFrameDuration,
     TopAction::TogglePlayback,
     TopAction::ToggleOnionSkin,
@@ -605,6 +608,7 @@ enum Modal {
     OverwriteConfirm {
         path: PathBuf,
     },
+    DeleteFrameConfirm,
     BrushChar {
         input: String,
     },
@@ -1099,6 +1103,9 @@ impl AppState {
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 self.insert_blank_frame();
             }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.request_delete_current_frame();
+            }
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 self.open_frame_duration();
             }
@@ -1381,6 +1388,7 @@ impl AppState {
                 self.file_path = Some(path);
                 self.save();
             }
+            Modal::DeleteFrameConfirm => self.delete_current_frame(),
             Modal::BrushChar { input } => {
                 let mut chars = input.chars();
                 match (chars.next(), chars.next()) {
@@ -2744,6 +2752,40 @@ impl AppState {
         self.insert_frame_after_current(BTreeMap::new(), "Added blank frame");
     }
 
+    fn request_delete_current_frame(&mut self) {
+        self.finish_stroke();
+        self.pause_playback();
+        if self.project.frames.len() <= 1 {
+            self.message = "Cannot delete the only frame".to_string();
+            return;
+        }
+
+        self.modal = Some(Modal::DeleteFrameConfirm);
+        self.message = format!(
+            "Confirm delete frame {}/{}",
+            self.current_frame_index + 1,
+            self.project.frames.len()
+        );
+    }
+
+    fn delete_current_frame(&mut self) {
+        if self.project.frames.len() <= 1 {
+            self.message = "Cannot delete the only frame".to_string();
+            return;
+        }
+
+        let deleted = self.current_frame_index + 1;
+        self.project.frames.remove(self.current_frame_index);
+        self.current_frame_index = self
+            .current_frame_index
+            .min(self.project.frames.len().saturating_sub(1));
+        self.reset_selection_state();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.dirty = true;
+        self.message = format!("Deleted frame {deleted}");
+    }
+
     fn insert_frame_after_current(
         &mut self,
         cells: BTreeMap<(u16, u16), PaintedCell>,
@@ -2872,6 +2914,7 @@ impl AppState {
             TopAction::NextFrame => self.next_frame_or_create(),
             TopAction::DuplicateFrame => self.duplicate_current_frame(),
             TopAction::BlankFrame => self.insert_blank_frame(),
+            TopAction::DeleteFrame => self.request_delete_current_frame(),
             TopAction::SetFrameDuration => self.open_frame_duration(),
             TopAction::TogglePlayback => self.toggle_playback(Instant::now()),
             TopAction::ToggleOnionSkin => self.toggle_onion_skin(),
@@ -4378,8 +4421,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help =
-        "Space play/pause | W duration | V select | drag selection to move | Ctrl-C/X copy/cut";
+    let help = "Space play/pause | W duration | X delete frame | V select | Ctrl-C/X copy/cut";
     let lines = vec![
         Line::from(help),
         Line::from(app.message.as_str()),
@@ -4456,6 +4498,14 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::OverwriteConfirm { path } => (
             "Overwrite File",
             format!("Replace existing file {}?", path.display()),
+        ),
+        Modal::DeleteFrameConfirm => (
+            "Delete Frame",
+            format!(
+                "Delete frame {}/{}?",
+                app.current_frame_index + 1,
+                app.project.frames.len()
+            ),
         ),
         Modal::BrushChar { input } => ("Brush Character", format!("Character: {input}")),
         Modal::TextInput { input, start } => {
@@ -5030,6 +5080,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::ExportText { input }
         | Modal::ExportAnsi { input } => Some(input),
         Modal::OverwriteConfirm { .. }
+        | Modal::DeleteFrameConfirm
         | Modal::RgbInput { .. }
         | Modal::ColorPicker
         | Modal::ExportMenu
@@ -5781,6 +5832,35 @@ mod tests {
         assert_eq!(app.current_frame().duration_ms, original_duration);
         assert!(matches!(app.modal, Some(Modal::FrameDuration { .. })));
         assert!(app.message.contains("positive milliseconds"));
+    }
+
+    #[test]
+    fn delete_frame_confirmation_removes_current_frame() {
+        let mut app = AppState::editor(Project::new_image("delete", 4, 2), None, false, "");
+        app.insert_blank_frame();
+        app.insert_blank_frame();
+        app.current_frame_index = 1;
+
+        app.request_delete_current_frame();
+        assert!(matches!(app.modal, Some(Modal::DeleteFrameConfirm)));
+        let modal = app.modal.take().expect("delete confirmation");
+        app.commit_modal(modal);
+
+        assert_eq!(app.project.frames.len(), 2);
+        assert_eq!(app.current_frame_index, 1);
+        assert!(app.dirty);
+        assert_eq!(app.message, "Deleted frame 2");
+    }
+
+    #[test]
+    fn delete_frame_keeps_only_frame() {
+        let mut app = AppState::editor(Project::new_image("delete", 4, 2), None, false, "");
+
+        app.request_delete_current_frame();
+
+        assert_eq!(app.project.frames.len(), 1);
+        assert!(app.modal.is_none());
+        assert_eq!(app.message, "Cannot delete the only frame");
     }
 
     #[test]
