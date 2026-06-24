@@ -350,6 +350,7 @@ enum Tool {
     Fill,
     Selection,
     Stamp,
+    Text,
 }
 
 impl Tool {
@@ -361,6 +362,7 @@ impl Tool {
             Self::Fill => "Fill",
             Self::Selection => "Select",
             Self::Stamp => "Stamp",
+            Self::Text => "Text",
         }
     }
 
@@ -372,6 +374,7 @@ impl Tool {
             Self::Fill => "Flood-fill matching neighboring cells",
             Self::Selection => "Drag, move, copy, cut, or stamp a region",
             Self::Stamp => "Paste the current stamp",
+            Self::Text => "Place a typed string on the canvas",
         }
     }
 }
@@ -383,6 +386,7 @@ const TOOL_CHOICES: &[Tool] = &[
     Tool::Fill,
     Tool::Selection,
     Tool::Stamp,
+    Tool::Text,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,6 +571,10 @@ enum Modal {
     },
     BrushChar {
         input: String,
+    },
+    TextInput {
+        input: String,
+        start: (u16, u16),
     },
     NewStyle {
         input: String,
@@ -1041,6 +1049,9 @@ impl AppState {
             KeyCode::Char('v') | KeyCode::Char('V') => {
                 self.select_tool(Tool::Selection);
             }
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                self.select_tool(Tool::Text);
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.modal = Some(Modal::BrushChar {
                     input: self.brush_char.to_string(),
@@ -1071,9 +1082,6 @@ impl AppState {
             }
             KeyCode::Char('u') | KeyCode::Char('U') => {
                 self.open_rgb_input();
-            }
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                self.open_export_text();
             }
             KeyCode::Char('[') => self.previous_style(),
             KeyCode::Char(']') | KeyCode::Tab => self.next_style(),
@@ -1133,6 +1141,9 @@ impl AppState {
                 }
                 KeyCode::Char('6') | KeyCode::Char('s') | KeyCode::Char('S') => {
                     self.select_tool_from_menu(Tool::Stamp);
+                }
+                KeyCode::Char('7') | KeyCode::Char('t') | KeyCode::Char('T') => {
+                    self.select_tool_from_menu(Tool::Text);
                 }
                 _ => {}
             }
@@ -1303,6 +1314,21 @@ impl AppState {
                     }
                 }
             }
+            Modal::TextInput { input, start } => {
+                if input.is_empty() {
+                    self.message = "Text cannot be empty".to_string();
+                    self.modal = Some(Modal::TextInput { input, start });
+                    return;
+                }
+
+                if let Some(ch) = input.chars().find(|ch| !is_valid_v1_character(*ch)) {
+                    self.message = format!("Text contains invalid V1 character {ch:?}");
+                    self.modal = Some(Modal::TextInput { input, start });
+                    return;
+                }
+
+                self.place_text(start.0, start.1, &input);
+            }
             Modal::NewStyle { input } => {
                 let id = input.trim();
                 if id.is_empty() || self.project.styles.iter().any(|style| style.id == id) {
@@ -1460,6 +1486,10 @@ impl AppState {
                 }
                 if matches!(self.tool, Tool::Stamp) {
                     self.paste_stamp_at_screen(mouse.column, mouse.row);
+                    return;
+                }
+                if matches!(self.tool, Tool::Text) {
+                    self.open_text_input_at_screen(mouse.column, mouse.row);
                     return;
                 }
                 if matches!(self.tool, Tool::Pencil | Tool::Eraser) {
@@ -1956,6 +1986,44 @@ impl AppState {
         self.paste_stamp_at(x, y);
     }
 
+    fn open_text_input_at_screen(&mut self, column: u16, row: u16) {
+        let Some((x, y)) = self.canvas_cell_at(column, row) else {
+            return;
+        };
+        self.modal = Some(Modal::TextInput {
+            input: String::new(),
+            start: (x, y),
+        });
+        self.message = format!("Enter text for {x},{y}");
+    }
+
+    fn place_text(&mut self, x: u16, y: u16, text: &str) {
+        let mut updates = BTreeMap::new();
+        let mut written = 0usize;
+
+        for (offset, ch) in text.chars().enumerate() {
+            let Some(target_x) = x.checked_add(u16::try_from(offset).unwrap_or(u16::MAX)) else {
+                break;
+            };
+            if target_x >= self.project.asset.width || y >= self.project.asset.height {
+                break;
+            }
+            updates.insert(
+                (y, target_x),
+                Some(PaintedCell {
+                    ch,
+                    style_index: self.current_style,
+                }),
+            );
+            written += 1;
+        }
+
+        self.apply_cell_updates(updates, "Placed text");
+        if written < text.chars().count() {
+            self.message = format!("Placed text ({written} chars, clipped)");
+        }
+    }
+
     fn paste_stamp_at(&mut self, x: u16, y: u16) {
         let Some(stamp) = self.current_stamp().cloned() else {
             self.message = "No stamp available".to_string();
@@ -2256,7 +2324,7 @@ impl AppState {
                 }
             }
             Tool::Fill => self.fill_at(x, y),
-            Tool::Selection | Tool::Stamp => {}
+            Tool::Selection | Tool::Stamp | Tool::Text => {}
         }
     }
 
@@ -3921,6 +3989,9 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
             format!("Replace existing file {}?", path.display()),
         ),
         Modal::BrushChar { input } => ("Brush Character", format!("Character: {input}")),
+        Modal::TextInput { input, start } => {
+            ("Text", format!("At {},{}: {}", start.0, start.1, input))
+        }
         Modal::NewStyle { input } => ("New Style", format!("Style ID: {input}")),
         Modal::RenameStyle { input } => ("Rename Style", format!("Style ID: {input}")),
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
@@ -4427,6 +4498,7 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
             Tool::Fill => "F",
             Tool::Selection => "V",
             Tool::Stamp => "S",
+            Tool::Text => "T",
         };
         let label = format!(
             "{}  {}  {:<10} {}",
@@ -4471,6 +4543,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::OpenFile { input }
         | Modal::SaveAs { input }
         | Modal::BrushChar { input }
+        | Modal::TextInput { input, .. }
         | Modal::NewStyle { input }
         | Modal::RenameStyle { input }
         | Modal::SetFg { input }
@@ -4954,6 +5027,46 @@ mod tests {
         app.paste_stamp_at(2, 0);
 
         assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'z');
+    }
+
+    #[test]
+    fn text_tool_places_string_as_one_undoable_edit() {
+        let mut app = AppState::editor(Project::new_image("text", 4, 1), None, false, "");
+
+        app.place_text(1, 0, "Hi");
+
+        assert_eq!(app.current_frame().cells[&(0, 1)].ch, 'H');
+        assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'i');
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo();
+
+        assert!(!app.current_frame().cells.contains_key(&(0, 1)));
+        assert!(!app.current_frame().cells.contains_key(&(0, 2)));
+    }
+
+    #[test]
+    fn text_tool_clips_at_canvas_edge() {
+        let mut app = AppState::editor(Project::new_image("text", 3, 1), None, false, "");
+
+        app.place_text(2, 0, "ABC");
+
+        assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'A');
+        assert_eq!(app.current_frame().cells.len(), 1);
+        assert!(app.message.contains("clipped"));
+    }
+
+    #[test]
+    fn text_modal_rejects_invalid_characters() {
+        let mut app = AppState::editor(Project::new_image("text", 4, 1), None, false, "");
+
+        app.commit_modal(Modal::TextInput {
+            input: "\n".to_string(),
+            start: (0, 0),
+        });
+
+        assert!(matches!(app.modal, Some(Modal::TextInput { .. })));
+        assert!(app.message.contains("invalid V1 character"));
     }
 
     #[test]
