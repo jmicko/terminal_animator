@@ -354,6 +354,7 @@ enum Tool {
     Text,
     Line,
     Rectangle,
+    FilledRectangle,
 }
 
 impl Tool {
@@ -368,6 +369,7 @@ impl Tool {
             Self::Text => "Text",
             Self::Line => "Line",
             Self::Rectangle => "Rect",
+            Self::FilledRectangle => "FillRect",
         }
     }
 
@@ -382,6 +384,7 @@ impl Tool {
             Self::Text => "Place a typed string on the canvas",
             Self::Line => "Drag to draw a straight line",
             Self::Rectangle => "Drag to draw a rectangle outline",
+            Self::FilledRectangle => "Drag to draw a filled rectangle",
         }
     }
 }
@@ -396,6 +399,7 @@ const TOOL_CHOICES: &[Tool] = &[
     Tool::Text,
     Tool::Line,
     Tool::Rectangle,
+    Tool::FilledRectangle,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1133,6 +1137,9 @@ impl AppState {
             KeyCode::Char('h') | KeyCode::Char('H') => {
                 self.select_tool(Tool::Rectangle);
             }
+            KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.select_tool(Tool::FilledRectangle);
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.modal = Some(Modal::BrushChar {
                     input: self.brush_char.to_string(),
@@ -1231,6 +1238,9 @@ impl AppState {
                 }
                 KeyCode::Char('9') | KeyCode::Char('h') | KeyCode::Char('H') => {
                     self.select_tool_from_menu(Tool::Rectangle);
+                }
+                KeyCode::Char('0') | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    self.select_tool_from_menu(Tool::FilledRectangle);
                 }
                 _ => {}
             }
@@ -1596,7 +1606,10 @@ impl AppState {
                     self.open_text_input_at_screen(mouse.column, mouse.row);
                     return;
                 }
-                if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                if matches!(
+                    self.tool,
+                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
+                ) {
                     self.begin_shape_mouse(mouse.column, mouse.row);
                     return;
                 }
@@ -1610,7 +1623,10 @@ impl AppState {
                     self.update_selection_mouse(mouse.column, mouse.row);
                     return;
                 }
-                if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                if matches!(
+                    self.tool,
+                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
+                ) {
                     self.update_shape_mouse(mouse.column, mouse.row);
                     return;
                 }
@@ -1625,7 +1641,10 @@ impl AppState {
             MouseEventKind::Up(MouseButton::Left) => {
                 if matches!(self.tool, Tool::Selection) {
                     self.finish_selection_mouse();
-                } else if matches!(self.tool, Tool::Line | Tool::Rectangle) {
+                } else if matches!(
+                    self.tool,
+                    Tool::Line | Tool::Rectangle | Tool::FilledRectangle
+                ) {
                     self.finish_shape_mouse();
                 } else {
                     self.finish_stroke();
@@ -2542,7 +2561,12 @@ impl AppState {
                 }
             }
             Tool::Fill => self.fill_at(x, y),
-            Tool::Selection | Tool::Stamp | Tool::Text | Tool::Line | Tool::Rectangle => {}
+            Tool::Selection
+            | Tool::Stamp
+            | Tool::Text
+            | Tool::Line
+            | Tool::Rectangle
+            | Tool::FilledRectangle => {}
         }
     }
 
@@ -3978,6 +4002,7 @@ fn shape_points(tool: Tool, start: (u16, u16), end: (u16, u16)) -> BTreeSet<(u16
     match tool {
         Tool::Line => line_points(start, end),
         Tool::Rectangle => rectangle_points(CellRect::from_points(start, end)),
+        Tool::FilledRectangle => filled_rectangle_points(CellRect::from_points(start, end)),
         _ => BTreeSet::new(),
     }
 }
@@ -4021,6 +4046,16 @@ fn rectangle_points(rect: CellRect) -> BTreeSet<(u16, u16)> {
             if rect.is_border(x, y) {
                 points.insert((x, y));
             }
+        }
+    }
+    points
+}
+
+fn filled_rectangle_points(rect: CellRect) -> BTreeSet<(u16, u16)> {
+    let mut points = BTreeSet::new();
+    for y in rect.y..rect.y.saturating_add(rect.height) {
+        for x in rect.x..rect.x.saturating_add(rect.width) {
+            points.insert((x, y));
         }
     }
     points
@@ -5021,6 +5056,7 @@ fn draw_tool_menu(frame: &mut Frame<'_>, app: &mut AppState) {
             Tool::Text => "T",
             Tool::Line => "L",
             Tool::Rectangle => "H",
+            Tool::FilledRectangle => "J",
         };
         let label = format!(
             "{}  {}  {:<10} {}",
@@ -5719,6 +5755,22 @@ mod tests {
         assert_eq!(app.current_frame().cells[&(0, 0)].ch, '#');
         assert_eq!(app.current_frame().cells[&(2, 3)].ch, '#');
         assert!(!app.current_frame().cells.contains_key(&(1, 1)));
+    }
+
+    #[test]
+    fn filled_rectangle_tool_paints_interior() {
+        let mut app = AppState::editor(Project::new_image("rect", 4, 3), None, false, "");
+        app.brush_char = '%';
+
+        app.draw_shape(ShapeDrag {
+            tool: Tool::FilledRectangle,
+            start: (0, 0),
+            end: (3, 2),
+        });
+
+        assert_eq!(app.current_frame().cells.len(), 12);
+        assert_eq!(app.current_frame().cells[&(1, 1)].ch, '%');
+        assert_eq!(app.current_frame().cells[&(2, 3)].ch, '%');
     }
 
     #[test]
