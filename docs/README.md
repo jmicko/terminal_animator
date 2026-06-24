@@ -31,8 +31,8 @@ rewriting the art in Rust.
 ## Current Implementation Highlights
 
 - Mouse-first editor with pencil, eraser, eyedropper, and flood fill tools.
-- Clickable color, character, style attribute, expanded palette, and RGB mixer
-  controls.
+- Clickable foreground/background color targets, swatches, character palette,
+  style attributes, expanded palette, and RGB mixer controls.
 - Rectangle selection with copy, cut, delete, move, and reusable stamp paste
   workflows.
 - Still image and basic animation editing with frame navigation, duplicate,

@@ -532,6 +532,27 @@ enum RgbControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorTarget {
+    Foreground,
+    Background,
+}
+
+impl ColorTarget {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Foreground => "Foreground",
+            Self::Background => "Background",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorControl {
+    Target(ColorTarget),
+    TransparentBackground,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectionAction {
     Copy,
     Cut,
@@ -721,6 +742,7 @@ struct AppState {
     color_palette_area: Rect,
     recent_color_palette_area: Rect,
     character_palette_area: Rect,
+    color_control_areas: Vec<ButtonHit<ColorControl>>,
     attr_button_areas: Vec<ButtonHit<TextAttr>>,
     selection_action_areas: Vec<ButtonHit<SelectionAction>>,
     more_colors_button_area: Rect,
@@ -734,8 +756,10 @@ struct AppState {
     modal_area: Rect,
     recent_extra_colors: Vec<Color>,
     color_picker_scroll_row: usize,
+    color_target: ColorTarget,
     hovered_palette: Option<PaletteHover>,
     hovered_recent_color: Option<usize>,
+    hovered_color_control: Option<ColorControl>,
     hovered_attr: Option<TextAttr>,
     hovered_selection_action: Option<SelectionAction>,
     hovered_welcome_action: Option<WelcomeAction>,
@@ -825,6 +849,7 @@ impl AppState {
             color_palette_area: Rect::default(),
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            color_control_areas: Vec::new(),
             attr_button_areas: Vec::new(),
             selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
@@ -838,8 +863,10 @@ impl AppState {
             modal_area: Rect::default(),
             recent_extra_colors: Vec::new(),
             color_picker_scroll_row: 0,
+            color_target: ColorTarget::Foreground,
             hovered_palette: None,
             hovered_recent_color: None,
+            hovered_color_control: None,
             hovered_attr: None,
             hovered_selection_action: None,
             hovered_welcome_action: None,
@@ -891,6 +918,7 @@ impl AppState {
             color_palette_area: Rect::default(),
             recent_color_palette_area: Rect::default(),
             character_palette_area: Rect::default(),
+            color_control_areas: Vec::new(),
             attr_button_areas: Vec::new(),
             selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
@@ -904,8 +932,10 @@ impl AppState {
             modal_area: Rect::default(),
             recent_extra_colors: Vec::new(),
             color_picker_scroll_row: 0,
+            color_target: ColorTarget::Foreground,
             hovered_palette: None,
             hovered_recent_color: None,
+            hovered_color_control: None,
             hovered_attr: None,
             hovered_selection_action: None,
             hovered_welcome_action: None,
@@ -1421,8 +1451,13 @@ impl AppState {
                 }
             }
             Modal::RgbInput { color } => {
+                let target = self.color_target;
                 self.select_custom_color(color, false);
-                self.message = format!("Selected RGB {}", color.to_hex());
+                self.message = format!(
+                    "Selected {} RGB {}",
+                    target.label().to_lowercase(),
+                    color.to_hex()
+                );
             }
             Modal::ExportText { input } => {
                 let path = PathBuf::from(input.trim());
@@ -1654,6 +1689,7 @@ impl AppState {
         self.hovered_brush_button = rect_contains(self.brush_button_area, column, row);
         self.hovered_more_colors_button = rect_contains(self.more_colors_button_area, column, row);
         self.hovered_rgb_button = rect_contains(self.rgb_button_area, column, row);
+        self.hovered_color_control = self.color_control_at(column, row);
         self.hovered_attr = self.attr_action_at(column, row);
         self.hovered_selection_action = self.selection_action_at(column, row);
         self.hovered_canvas_cell = if self.hovered_top_action.is_none()
@@ -1661,6 +1697,7 @@ impl AppState {
             && !self.hovered_brush_button
             && !self.hovered_more_colors_button
             && !self.hovered_rgb_button
+            && self.hovered_color_control.is_none()
             && self.hovered_attr.is_none()
             && self.hovered_selection_action.is_none()
         {
@@ -1754,6 +1791,13 @@ impl AppState {
             .map(|hit| hit.action)
     }
 
+    fn color_control_at(&self, column: u16, row: u16) -> Option<ColorControl> {
+        self.color_control_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
     fn apply_rgb_control(&mut self, control: RgbControl, column: u16) {
         match control {
             RgbControl::Decrement(channel) => self.adjust_rgb_channel(channel, -1),
@@ -1813,6 +1857,11 @@ impl AppState {
     }
 
     fn apply_palette_click(&mut self, column: u16, row: u16) -> bool {
+        if let Some(control) = self.color_control_at(column, row) {
+            self.run_color_control(control);
+            return true;
+        }
+
         if let Some(action) = self.selection_action_at(column, row) {
             self.run_selection_action(action);
             return true;
@@ -1871,6 +1920,25 @@ impl AppState {
             SelectionAction::Delete => self.delete_selection(),
             SelectionAction::Stamp => self.save_selection_as_stamp(),
             SelectionAction::Clear => self.clear_selection(),
+        }
+    }
+
+    fn run_color_control(&mut self, control: ColorControl) {
+        match control {
+            ColorControl::Target(target) => {
+                self.color_target = target;
+                self.message = format!("Palette edits {}", target.label().to_lowercase());
+            }
+            ColorControl::TransparentBackground => {
+                let current = self.project.styles[self.current_style].clone();
+                self.color_target = ColorTarget::Background;
+                self.select_style_variant(
+                    current.fg,
+                    None,
+                    current.attrs,
+                    "Background transparent",
+                );
+            }
         }
     }
 
@@ -2274,41 +2342,55 @@ impl AppState {
     }
 
     fn select_color(&mut self, color: Color, label: &str, id_base: &str, add_recent: bool) {
-        self.tool = Tool::Pencil;
-
-        if let Some(index) = self
-            .project
-            .styles
-            .iter()
-            .position(|style| style.fg == color && style.bg.is_none() && style.attrs.is_empty())
-        {
-            self.current_style = index;
-            if add_recent {
-                self.add_recent_extra_color(color);
+        let current = self.project.styles[self.current_style].clone();
+        let attrs = current.attrs;
+        let hex = color.to_hex();
+        let (fg, bg, style_base, target) = match self.color_target {
+            ColorTarget::Foreground => {
+                let style_base = if current.bg.is_none() && attrs.is_empty() {
+                    id_base.to_string()
+                } else {
+                    style_id_base_for_variant(color, current.bg, &attrs)
+                };
+                (color, current.bg, style_base, ColorTarget::Foreground)
             }
-            self.message = format!("Selected {label} ({})", color.to_hex());
-            return;
-        }
+            ColorTarget::Background => {
+                let bg = Some(color);
+                (
+                    current.fg,
+                    bg,
+                    style_id_base_for_variant(current.fg, bg, &attrs),
+                    ColorTarget::Background,
+                )
+            }
+        };
 
-        if self.project.styles.len() >= MAX_STYLES {
-            self.message = format!("Cannot add {label}: style limit reached");
-            return;
-        }
-
-        let id = unique_style_id(&self.project, id_base);
-        self.project.styles.push(TerminalStyle {
-            id,
-            fg: color,
-            bg: None,
-            attrs: Vec::new(),
-            role: Some("palette".to_string()),
-        });
-        self.current_style = self.project.styles.len() - 1;
-        self.dirty = true;
-        if add_recent {
+        if self.select_style_variant_with_base(
+            fg,
+            bg,
+            attrs,
+            &style_base,
+            &format!("{} {label} ({hex})", target.label()),
+        ) && add_recent
+        {
             self.add_recent_extra_color(color);
         }
-        self.message = format!("Selected {label} ({})", color.to_hex());
+    }
+
+    fn active_target_color(&self) -> Option<Color> {
+        let style = &self.project.styles[self.current_style];
+        match self.color_target {
+            ColorTarget::Foreground => Some(style.fg),
+            ColorTarget::Background => style.bg,
+        }
+    }
+
+    fn rgb_input_base_color(&self) -> Color {
+        let style = &self.project.styles[self.current_style];
+        match self.color_target {
+            ColorTarget::Foreground => style.fg,
+            ColorTarget::Background => style.bg.unwrap_or(Color { r: 0, g: 0, b: 0 }),
+        }
     }
 
     fn toggle_current_attr(&mut self, attr: TextAttr) {
@@ -2341,7 +2423,19 @@ impl AppState {
         bg: Option<Color>,
         attrs: Vec<TextAttr>,
         label: &str,
-    ) {
+    ) -> bool {
+        let id_base = style_id_base_for_variant(fg, bg, &attrs);
+        self.select_style_variant_with_base(fg, bg, attrs, &id_base, label)
+    }
+
+    fn select_style_variant_with_base(
+        &mut self,
+        fg: Color,
+        bg: Option<Color>,
+        attrs: Vec<TextAttr>,
+        id_base: &str,
+        label: &str,
+    ) -> bool {
         self.tool = Tool::Pencil;
 
         if let Some(index) = self
@@ -2352,15 +2446,15 @@ impl AppState {
         {
             self.current_style = index;
             self.message = format!("Selected style ({label})");
-            return;
+            return true;
         }
 
         if self.project.styles.len() >= MAX_STYLES {
             self.message = "Cannot create style variant: style limit reached".to_string();
-            return;
+            return false;
         }
 
-        let id = unique_style_id(&self.project, &style_id_base_for_variant(fg, bg, &attrs));
+        let id = unique_style_id(&self.project, id_base);
         self.project.styles.push(TerminalStyle {
             id,
             fg,
@@ -2371,6 +2465,7 @@ impl AppState {
         self.current_style = self.project.styles.len() - 1;
         self.dirty = true;
         self.message = format!("Selected style ({label})");
+        true
     }
 
     fn add_recent_extra_color(&mut self, color: Color) {
@@ -2735,11 +2830,14 @@ impl AppState {
     }
 
     fn open_rgb_input(&mut self) {
-        let color = self.project.styles[self.current_style].fg;
+        let color = self.rgb_input_base_color();
         self.modal = Some(Modal::RgbInput { color });
         self.hovered_rgb_control = None;
         self.dragging_rgb_channel = None;
-        self.message = "Adjust RGB with sliders".to_string();
+        self.message = format!(
+            "Adjust {} RGB with sliders",
+            self.color_target.label().to_lowercase()
+        );
     }
 
     fn scroll_color_picker(&mut self, delta_rows: isize) {
@@ -3071,6 +3169,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     app.color_palette_area = Rect::default();
     app.recent_color_palette_area = Rect::default();
     app.character_palette_area = Rect::default();
+    app.color_control_areas.clear();
     app.attr_button_areas.clear();
     app.selection_action_areas.clear();
     app.more_colors_button_area = Rect::default();
@@ -3110,15 +3209,47 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         ),
         normal,
     );
-    draw_sidebar_line(
+    draw_color_target_line(
         frame,
+        app,
         inner,
         &mut y,
         max_y,
-        format!("FG: {}", style.fg.to_hex()),
-        TuiStyle::default().fg(TuiColor::Rgb(style.fg.r, style.fg.g, style.fg.b)),
+        ColorTargetLine {
+            control: ColorControl::Target(ColorTarget::Foreground),
+            text: format!("FG: {}", style.fg.to_hex()),
+            preview_color: Some(style.fg),
+            selected: app.color_target == ColorTarget::Foreground,
+        },
     );
-    draw_sidebar_line(frame, inner, &mut y, max_y, format!("BG: {bg}"), normal);
+    draw_color_target_line(
+        frame,
+        app,
+        inner,
+        &mut y,
+        max_y,
+        ColorTargetLine {
+            control: ColorControl::Target(ColorTarget::Background),
+            text: format!("BG: {bg}"),
+            preview_color: style.bg,
+            selected: app.color_target == ColorTarget::Background,
+        },
+    );
+    if style.bg.is_some() {
+        draw_color_target_line(
+            frame,
+            app,
+            inner,
+            &mut y,
+            max_y,
+            ColorTargetLine {
+                control: ColorControl::TransparentBackground,
+                text: "Clear BG".to_string(),
+                preview_color: None,
+                selected: false,
+            },
+        );
+    }
     draw_attr_toggles(frame, app, inner, &mut y, max_y, &style.attrs);
     draw_selection_controls(frame, app, inner, &mut y, max_y);
     draw_sidebar_spacer(&mut y, max_y);
@@ -3138,7 +3269,12 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             Some(PaletteHover::Color(index)) => Some(index),
             _ => None,
         };
-        draw_color_palette(frame, app.color_palette_area, style.fg, hovered_color);
+        draw_color_palette(
+            frame,
+            app.color_palette_area,
+            app.active_target_color(),
+            hovered_color,
+        );
         y = y.saturating_add(color_height);
     }
 
@@ -3158,7 +3294,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             draw_color_grid(
                 frame,
                 app.recent_color_palette_area,
-                style.fg,
+                app.active_target_color(),
                 app.hovered_recent_color,
                 app.recent_extra_colors.len(),
                 |index| app.recent_extra_colors[index],
@@ -3223,7 +3359,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         inner,
         &mut y,
         max_y,
-        "Click swatches/symbols".to_string(),
+        "Click FG/BG, swatches, symbols".to_string(),
         normal,
     );
     draw_sidebar_line(
@@ -3287,6 +3423,56 @@ fn draw_sidebar_control_line(
     *y = y.saturating_add(1);
 
     line_area
+}
+
+struct ColorTargetLine {
+    control: ColorControl,
+    text: String,
+    preview_color: Option<Color>,
+    selected: bool,
+}
+
+fn draw_color_target_line(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    area: Rect,
+    y: &mut u16,
+    max_y: u16,
+    line: ColorTargetLine,
+) {
+    if *y >= max_y {
+        return;
+    }
+
+    let line_area = Rect {
+        x: area.x,
+        y: *y,
+        width: area.width,
+        height: 1,
+    };
+    let hovered = app.hovered_color_control == Some(line.control);
+    let style = if line.selected || hovered {
+        choice_style(line.selected, hovered)
+    } else if let Some(color) = line.preview_color {
+        TuiStyle::default().fg(tui_color(color))
+    } else {
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194))
+    };
+
+    fill_rect(frame, line_area, style);
+    draw_text(
+        frame,
+        line_area.x,
+        line_area.y,
+        line_area.width,
+        &line.text,
+        style,
+    );
+    app.color_control_areas.push(ButtonHit {
+        action: line.control,
+        area: line_area,
+    });
+    *y = y.saturating_add(1);
 }
 
 fn draw_attr_toggles(
@@ -3414,7 +3600,7 @@ fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
 fn draw_color_palette(
     frame: &mut Frame<'_>,
     area: Rect,
-    selected_color: Color,
+    selected_color: Option<Color>,
     hovered_index: Option<usize>,
 ) {
     draw_color_grid(
@@ -3430,7 +3616,7 @@ fn draw_color_palette(
 fn draw_color_grid(
     frame: &mut Frame<'_>,
     area: Rect,
-    selected_color: Color,
+    selected_color: Option<Color>,
     hovered_index: Option<usize>,
     color_count: usize,
     mut color_at: impl FnMut(usize) -> Color,
@@ -3449,7 +3635,7 @@ fn draw_color_grid(
 
         let style = TuiStyle::default().bg(TuiColor::Rgb(color.r, color.g, color.b));
 
-        let selected = color == selected_color;
+        let selected = selected_color == Some(color);
         let hovered = hovered_index == Some(index);
         let indicator_style = if selected && hovered {
             TuiStyle::default()
@@ -4514,7 +4700,7 @@ fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
     let visible_rows = grid_area.height;
     let start_index = app.color_picker_scroll_row * usize::from(columns);
     let visible_count = usize::from(columns) * usize::from(visible_rows);
-    let selected_color = app.project.styles[app.current_style].fg;
+    let selected_color = app.active_target_color();
     let hovered_visible_index = app
         .hovered_modal_color
         .and_then(|index| index.checked_sub(start_index))
@@ -4887,6 +5073,54 @@ mod tests {
     }
 
     #[test]
+    fn background_palette_selection_preserves_foreground_and_attrs() {
+        let mut app = AppState::editor(Project::new_image("palette", 4, 2), None, false, "");
+        app.project.styles[0].attrs = vec![TextAttr::Bold];
+        app.color_target = ColorTarget::Background;
+        let original_style = app.project.styles[0].clone();
+        let red = COLOR_PALETTE
+            .iter()
+            .find(|palette_color| palette_color.name == "red")
+            .copied()
+            .expect("red palette entry");
+
+        app.select_palette_color(red);
+
+        assert_eq!(app.project.styles[0], original_style);
+        let selected = &app.project.styles[app.current_style];
+        assert_eq!(selected.fg, original_style.fg);
+        assert_eq!(selected.bg, Some(red.color));
+        assert_eq!(selected.attrs, vec![TextAttr::Bold]);
+        assert_eq!(app.tool, Tool::Pencil);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn transparent_background_control_keeps_foreground_and_attrs() {
+        let mut app = AppState::editor(Project::new_image("palette", 4, 2), None, false, "");
+        let foreground = app.project.styles[0].fg;
+        let background = Color {
+            r: 12,
+            g: 34,
+            b: 56,
+        };
+        app.select_style_variant(
+            foreground,
+            Some(background),
+            vec![TextAttr::Underline],
+            "test bg",
+        );
+
+        app.run_color_control(ColorControl::TransparentBackground);
+
+        assert_eq!(app.color_target, ColorTarget::Background);
+        let selected = &app.project.styles[app.current_style];
+        assert_eq!(selected.fg, foreground);
+        assert_eq!(selected.bg, None);
+        assert_eq!(selected.attrs, vec![TextAttr::Underline]);
+    }
+
+    #[test]
     fn toggling_attrs_creates_non_destructive_style_variant() {
         let mut app = AppState::editor(Project::new_image("attrs", 4, 2), None, false, "");
         app.set_cell_for_stroke(
@@ -5009,6 +5243,34 @@ mod tests {
 
         app.update_hover(22, 6);
         assert_eq!(app.hovered_canvas_cell, Some((1, 2)));
+    }
+
+    #[test]
+    fn hover_tracks_color_target_controls() {
+        let mut app = AppState::editor(Project::new_image("hover", 4, 2), None, false, "");
+        app.color_control_areas.push(ButtonHit {
+            action: ColorControl::Target(ColorTarget::Background),
+            area: Rect {
+                x: 1,
+                y: 3,
+                width: 12,
+                height: 1,
+            },
+        });
+        app.canvas_area = Rect {
+            x: 1,
+            y: 3,
+            width: 4,
+            height: 2,
+        };
+
+        app.update_hover(2, 3);
+
+        assert_eq!(
+            app.hovered_color_control,
+            Some(ColorControl::Target(ColorTarget::Background))
+        );
+        assert_eq!(app.hovered_canvas_cell, None);
     }
 
     #[test]
@@ -5389,6 +5651,30 @@ mod tests {
             Some(Modal::RgbInput {
                 color: Color { r: 255, g: 0, b: 0 }
             })
+        ));
+    }
+
+    #[test]
+    fn rgb_input_uses_active_background_color() {
+        let mut app = AppState::editor(Project::new_image("rgb", 4, 2), None, false, "");
+        let background = Color {
+            r: 20,
+            g: 40,
+            b: 60,
+        };
+        app.select_style_variant(
+            app.project.styles[0].fg,
+            Some(background),
+            Vec::new(),
+            "test bg",
+        );
+        app.color_target = ColorTarget::Background;
+
+        app.open_rgb_input();
+
+        assert!(matches!(
+            app.modal,
+            Some(Modal::RgbInput { color }) if color == background
         ));
     }
 
