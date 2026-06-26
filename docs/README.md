@@ -33,14 +33,14 @@ rewriting the art in Rust.
 - Mouse-first editor with pencil, eraser, eyedropper, flood fill, text, line,
   rectangle, and filled-rectangle tools.
 - Clickable foreground/background color targets, swatches, character palette,
-  style attributes, expanded palette, and RGB mixer controls.
+  style attributes, cohesive expanded palette, and RGB mixer controls.
 - Rectangle selection with copy, cut, delete, move, and reusable stamp paste
   workflows.
 - Still image and basic animation editing with frame navigation, duplicate,
   blank/delete frame, per-frame duration editing, duration-based playback, and
   previous-frame onion skin.
 - Clickable top-bar actions for frame controls, playback, undo/redo, save,
-  export, and quit.
+  export, and quit, with animation controls hidden for still images.
 - Save/load for canonical `.tanim.toml` files with save-as overwrite
   confirmation.
 - Plain text and ANSI export from the interactive app and CLI:

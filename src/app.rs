@@ -32,9 +32,8 @@ const CHAR_SLOT_WIDTH: u16 = 3;
 const TOP_BUTTON_GAP: u16 = 1;
 const EXPANDED_COLOR_COLUMNS: u16 = 12;
 const EXPANDED_HUE_COUNT: usize = 12;
-const EXPANDED_TONE_COUNT: usize = 16;
-const EXPANDED_NEUTRAL_COUNT: usize = 36;
-const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT + EXPANDED_NEUTRAL_COUNT;
+const EXPANDED_TONE_COUNT: usize = 24;
+const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT;
 const MAX_RECENT_COLORS: usize = 24;
 const MAX_STAMPS: usize = 12;
 const ATTR_CHOICES: &[TextAttr] = &[
@@ -1023,6 +1022,29 @@ impl AppState {
             .and_then(|index| self.project.frames.get(index))
     }
 
+    fn is_animation_mode(&self) -> bool {
+        self.project.asset.kind == AssetKind::Animation
+    }
+
+    fn top_action_available(&self, action: TopAction) -> bool {
+        match action {
+            TopAction::PreviousFrame
+            | TopAction::NextFrame
+            | TopAction::DuplicateFrame
+            | TopAction::BlankFrame
+            | TopAction::DeleteFrame
+            | TopAction::SetFrameDuration
+            | TopAction::TogglePlayback
+            | TopAction::ToggleOnionSkin => self.is_animation_mode(),
+            TopAction::Undo
+            | TopAction::Redo
+            | TopAction::Save
+            | TopAction::SaveAs
+            | TopAction::ExportText
+            | TopAction::Quit => true,
+        }
+    }
+
     fn normalize_frame_kind(&mut self) {
         if self.project.frames.len() > 1 {
             self.project.asset.kind = AssetKind::Animation;
@@ -1109,15 +1131,17 @@ impl AppState {
         }
 
         match key.code {
-            KeyCode::Char(' ') => self.toggle_playback(Instant::now()),
+            KeyCode::Char(' ') if self.is_animation_mode() => self.toggle_playback(Instant::now()),
             KeyCode::Right if self.can_nudge_selection() => self.nudge_selection(1, 0),
             KeyCode::Left if self.can_nudge_selection() => self.nudge_selection(-1, 0),
             KeyCode::Up if self.can_nudge_selection() => self.nudge_selection(0, -1),
             KeyCode::Down if self.can_nudge_selection() => self.nudge_selection(0, 1),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right => {
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right
+                if self.is_animation_mode() =>
+            {
                 self.next_frame_or_create();
             }
-            KeyCode::Left => {
+            KeyCode::Left if self.is_animation_mode() => {
                 self.previous_frame_or_message();
             }
             KeyCode::Delete | KeyCode::Backspace if self.selection.is_some() => {
@@ -1126,19 +1150,19 @@ impl AppState {
             KeyCode::Esc if self.selection.is_some() => {
                 self.clear_selection();
             }
-            KeyCode::Char('d') | KeyCode::Char('D') => {
+            KeyCode::Char('d') | KeyCode::Char('D') if self.is_animation_mode() => {
                 self.duplicate_current_frame();
             }
-            KeyCode::Char('b') | KeyCode::Char('B') => {
+            KeyCode::Char('b') | KeyCode::Char('B') if self.is_animation_mode() => {
                 self.insert_blank_frame();
             }
-            KeyCode::Char('x') | KeyCode::Char('X') => {
+            KeyCode::Char('x') | KeyCode::Char('X') if self.is_animation_mode() => {
                 self.request_delete_current_frame();
             }
-            KeyCode::Char('w') | KeyCode::Char('W') => {
+            KeyCode::Char('w') | KeyCode::Char('W') if self.is_animation_mode() => {
                 self.open_frame_duration();
             }
-            KeyCode::Char('o') | KeyCode::Char('O') => {
+            KeyCode::Char('o') | KeyCode::Char('O') if self.is_animation_mode() => {
                 self.toggle_onion_skin();
             }
             KeyCode::Char('p') | KeyCode::Char('P') => {
@@ -2949,6 +2973,11 @@ impl AppState {
     }
 
     fn run_top_action(&mut self, action: TopAction) {
+        if !self.top_action_available(action) {
+            self.message = "Action is only available for animations".to_string();
+            return;
+        }
+
         match action {
             TopAction::PreviousFrame => self.previous_frame_or_message(),
             TopAction::NextFrame => self.next_frame_or_create(),
@@ -3294,30 +3323,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "untitled".to_string());
-    let kind = match app.project.asset.kind {
-        AssetKind::Image => "image",
-        AssetKind::Animation => "animation",
-    };
-    let onion = if app.onion_skin {
-        "onion on"
-    } else {
-        "onion off"
-    };
-    let playback = if app.playing { "playing" } else { "paused" };
-    let text = format!(
-        " {}{} | {}x{} | {} | frame {}/{} @ {}ms | {} cells | {} | {}",
-        path,
-        dirty,
-        app.project.asset.width,
-        app.project.asset.height,
-        kind,
-        app.current_frame_index + 1,
-        app.project.frames.len(),
-        app.current_frame().duration_ms,
-        app.current_frame().cells.len(),
-        onion,
-        playback
-    );
+    let text = top_bar_status(app, &path, dirty);
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -3325,7 +3331,11 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 
     let mut x = inner.x + inner.width;
     let mut buttons = Vec::new();
-    for action in TOP_ACTIONS.iter().rev() {
+    for action in TOP_ACTIONS
+        .iter()
+        .rev()
+        .filter(|action| app.top_action_available(**action))
+    {
         let label = format!("[{}]", top_action_label(*action, app));
         let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
         if width + TOP_BUTTON_GAP > x.saturating_sub(inner.x) {
@@ -3360,6 +3370,36 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         };
         draw_text(frame, area.x, area.y, area.width, &label, style);
         app.top_action_areas.push(ButtonHit { action, area });
+    }
+}
+
+fn top_bar_status(app: &AppState, path: &str, dirty: &str) -> String {
+    match app.project.asset.kind {
+        AssetKind::Image => format!(
+            " {path}{dirty} | {}x{} | image | {} cells",
+            app.project.asset.width,
+            app.project.asset.height,
+            app.current_frame().cells.len()
+        ),
+        AssetKind::Animation => {
+            let onion = if app.onion_skin {
+                "onion on"
+            } else {
+                "onion off"
+            };
+            let playback = if app.playing { "playing" } else { "paused" };
+            format!(
+                " {path}{dirty} | {}x{} | animation | frame {}/{} @ {}ms | {} cells | {} | {}",
+                app.project.asset.width,
+                app.project.asset.height,
+                app.current_frame_index + 1,
+                app.project.frames.len(),
+                app.current_frame().duration_ms,
+                app.current_frame().cells.len(),
+                onion,
+                playback
+            )
+        }
     }
 }
 
@@ -4171,79 +4211,16 @@ fn draw_text_centered(frame: &mut Frame<'_>, area: Rect, y: u16, text: &str, sty
 fn expanded_palette_color(index: usize) -> Color {
     let index = index.min(MORE_COLOR_COUNT - 1);
 
-    if index < EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT {
-        const HUES: [f32; EXPANDED_HUE_COUNT] = [
-            0.0, 24.0, 42.0, 58.0, 86.0, 126.0, 156.0, 184.0, 204.0, 226.0, 268.0, 314.0,
-        ];
-        const TONES: [(f32, f32); EXPANDED_TONE_COUNT] = [
-            (0.68, 0.18),
-            (0.72, 0.25),
-            (0.76, 0.33),
-            (0.80, 0.42),
-            (0.84, 0.51),
-            (0.82, 0.60),
-            (0.74, 0.69),
-            (0.64, 0.78),
-            (0.54, 0.86),
-            (0.44, 0.92),
-            (0.34, 0.30),
-            (0.42, 0.40),
-            (0.50, 0.50),
-            (0.46, 0.62),
-            (0.38, 0.74),
-            (0.30, 0.84),
-        ];
+    const HUES: [f32; EXPANDED_HUE_COUNT] = [
+        0.0, 24.0, 42.0, 58.0, 86.0, 126.0, 156.0, 184.0, 204.0, 226.0, 268.0, 314.0,
+    ];
 
-        let hue = HUES[index % EXPANDED_HUE_COUNT];
-        let (saturation, lightness) = TONES[index / EXPANDED_HUE_COUNT];
-        return hsl_to_rgb(hue, saturation, lightness);
-    }
-
-    neutral_palette_color(index - (EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT))
-}
-
-fn neutral_palette_color(index: usize) -> Color {
-    let row = index / usize::from(EXPANDED_COLOR_COLUMNS);
-    let column = index % usize::from(EXPANDED_COLOR_COLUMNS);
-
-    match row {
-        0 => {
-            let value = lerp_u8(18, 242, column, usize::from(EXPANDED_COLOR_COLUMNS) - 1);
-            Color {
-                r: value,
-                g: value,
-                b: value,
-            }
-        }
-        1 => lerp_color(
-            Color {
-                r: 55,
-                g: 38,
-                b: 27,
-            },
-            Color {
-                r: 244,
-                g: 222,
-                b: 186,
-            },
-            column,
-            usize::from(EXPANDED_COLOR_COLUMNS) - 1,
-        ),
-        _ => lerp_color(
-            Color {
-                r: 30,
-                g: 43,
-                b: 54,
-            },
-            Color {
-                r: 222,
-                g: 238,
-                b: 245,
-            },
-            column,
-            usize::from(EXPANDED_COLOR_COLUMNS) - 1,
-        ),
-    }
+    let row = index / EXPANDED_HUE_COUNT;
+    let tone = row as f32 / (EXPANDED_TONE_COUNT.saturating_sub(1) as f32);
+    let distance_from_middle = ((tone - 0.52).abs() / 0.52).min(1.0);
+    let saturation = 0.88 - (distance_from_middle * 0.34);
+    let lightness = 0.16 + (tone * 0.76);
+    hsl_to_rgb(HUES[index % EXPANDED_HUE_COUNT], saturation, lightness)
 }
 
 fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
@@ -4269,26 +4246,6 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
 
 fn float_channel_to_u8(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-fn lerp_color(start: Color, end: Color, step: usize, max_step: usize) -> Color {
-    Color {
-        r: lerp_u8(start.r, end.r, step, max_step),
-        g: lerp_u8(start.g, end.g, step, max_step),
-        b: lerp_u8(start.b, end.b, step, max_step),
-    }
-}
-
-fn lerp_u8(start: u8, end: u8, step: usize, max_step: usize) -> u8 {
-    if max_step == 0 {
-        return start;
-    }
-
-    let start = i32::from(start);
-    let end = i32::from(end);
-    let delta = end - start;
-    (start + delta * i32::try_from(step).unwrap_or(0) / i32::try_from(max_step).unwrap_or(1))
-        .clamp(0, 255) as u8
 }
 
 fn is_visible_palette_color(color: Color) -> bool {
@@ -6000,9 +5957,47 @@ mod tests {
         let red_lighter = expanded_palette_color(EXPANDED_HUE_COUNT);
         let blue_dark = expanded_palette_color(9);
 
+        assert_eq!(MORE_COLOR_COUNT, EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT);
         assert_ne!(red_dark, red_lighter);
         assert!(red_dark.r > red_dark.b);
         assert!(blue_dark.b > blue_dark.r);
+    }
+
+    #[test]
+    fn image_mode_hides_animation_top_bar_state_and_actions() {
+        let mut app = AppState::editor(Project::new_image("image", 4, 2), None, false, "");
+
+        let status = top_bar_status(&app, "art", "");
+
+        assert!(status.contains("image"));
+        assert!(!status.contains("frame"));
+        assert!(!status.contains("onion"));
+        assert!(!status.contains("paused"));
+        assert!(!app.top_action_available(TopAction::NextFrame));
+        assert!(!app.top_action_available(TopAction::TogglePlayback));
+        assert!(app.top_action_available(TopAction::Save));
+
+        app.run_top_action(TopAction::NextFrame);
+
+        assert_eq!(app.project.asset.kind, AssetKind::Image);
+        assert_eq!(app.project.frames.len(), 1);
+        assert_eq!(app.message, "Action is only available for animations");
+    }
+
+    #[test]
+    fn animation_mode_shows_animation_top_bar_state_and_actions() {
+        let mut project = Project::new_image("animation", 4, 2);
+        project.asset.kind = AssetKind::Animation;
+        let app = AppState::editor(project, None, false, "");
+
+        let status = top_bar_status(&app, "anim", "");
+
+        assert!(status.contains("animation"));
+        assert!(status.contains("frame 1/1"));
+        assert!(status.contains("onion off"));
+        assert!(status.contains("paused"));
+        assert!(app.top_action_available(TopAction::NextFrame));
+        assert!(app.top_action_available(TopAction::TogglePlayback));
     }
 
     #[test]
