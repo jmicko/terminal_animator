@@ -4308,6 +4308,29 @@ fn attr_short_label(attr: TextAttr) -> &'static str {
     }
 }
 
+fn stamp_preview_cell(app: &AppState, x: u16, y: u16) -> Option<&PaintedCell> {
+    if app.tool != Tool::Stamp {
+        return None;
+    }
+
+    let (anchor_y, anchor_x) = app.hovered_canvas_cell?;
+    let stamp = app.current_stamp()?;
+    let relative_x = x.checked_sub(anchor_x)?;
+    let relative_y = y.checked_sub(anchor_y)?;
+
+    if relative_x < stamp.width && relative_y < stamp.height {
+        stamp.cells.get(&(relative_y, relative_x))
+    } else {
+        None
+    }
+}
+
+fn stamp_preview_style(style: &TerminalStyle) -> TuiStyle {
+    style_to_tui(style)
+        .bg(TuiColor::Rgb(53, 48, 83))
+        .add_modifier(Modifier::DIM)
+}
+
 fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     let block = Block::default().title("Canvas").borders(Borders::ALL);
     let inner = block.inner(area);
@@ -4335,6 +4358,7 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
                     None
                 }
             });
+            let stamp_preview_cell = stamp_preview_cell(app, x, y);
 
             if shape_preview
                 .as_ref()
@@ -4348,6 +4372,11 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
             } else if let Some(cell) = moving_preview_cell {
                 let style = style_to_tui(&app.project.styles[cell.style_index])
                     .bg(TuiColor::Rgb(69, 55, 98));
+                let symbol = cell.ch.to_string();
+                buffer_cell.set_symbol(&symbol);
+                buffer_cell.set_style(style);
+            } else if let Some(cell) = stamp_preview_cell {
+                let style = stamp_preview_style(&app.project.styles[cell.style_index]);
                 let symbol = cell.ch.to_string();
                 buffer_cell.set_symbol(&symbol);
                 buffer_cell.set_style(style);
@@ -5640,6 +5669,47 @@ mod tests {
         app.paste_stamp_at(2, 0);
 
         assert_eq!(app.current_frame().cells[&(0, 2)].ch, 'z');
+    }
+
+    #[test]
+    fn stamp_preview_follows_hovered_canvas_cell() {
+        let mut app = AppState::editor(Project::new_image("stamp", 5, 4), None, false, "");
+        app.add_stamp(Stamp {
+            width: 2,
+            height: 2,
+            cells: BTreeMap::from([
+                (
+                    (0, 0),
+                    PaintedCell {
+                        ch: 'A',
+                        style_index: 0,
+                    },
+                ),
+                (
+                    (1, 1),
+                    PaintedCell {
+                        ch: 'B',
+                        style_index: 0,
+                    },
+                ),
+            ]),
+        });
+        app.tool = Tool::Stamp;
+        app.hovered_canvas_cell = Some((2, 1));
+
+        assert_eq!(
+            stamp_preview_cell(&app, 1, 2).map(|cell| cell.ch),
+            Some('A')
+        );
+        assert_eq!(
+            stamp_preview_cell(&app, 2, 3).map(|cell| cell.ch),
+            Some('B')
+        );
+        assert_eq!(stamp_preview_cell(&app, 2, 2), None);
+        assert_eq!(stamp_preview_cell(&app, 0, 2), None);
+
+        app.tool = Tool::Pencil;
+        assert_eq!(stamp_preview_cell(&app, 1, 2), None);
     }
 
     #[test]
