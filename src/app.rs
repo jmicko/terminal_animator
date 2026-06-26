@@ -599,6 +599,14 @@ enum SelectionAction {
     Clear,
 }
 
+const SELECTION_ACTIONS: &[SelectionAction] = &[
+    SelectionAction::Copy,
+    SelectionAction::Cut,
+    SelectionAction::Delete,
+    SelectionAction::Stamp,
+    SelectionAction::Clear,
+];
+
 impl SelectionAction {
     fn label(self) -> &'static str {
         match self {
@@ -3819,36 +3827,63 @@ fn draw_selection_controls(
         return;
     }
 
+    let (buttons, next_y) = selection_action_layout(area, *y, max_y);
+    for hit in buttons {
+        let style = choice_style(false, app.hovered_selection_action == Some(hit.action));
+        fill_rect(frame, hit.area, style);
+        draw_text_centered(frame, hit.area, hit.area.y, hit.action.label(), style);
+        app.selection_action_areas.push(hit);
+    }
+    *y = next_y;
+}
+
+fn selection_action_layout(
+    area: Rect,
+    y: u16,
+    max_y: u16,
+) -> (Vec<ButtonHit<SelectionAction>>, u16) {
+    let mut buttons = Vec::new();
+    if area.width == 0 || y >= max_y {
+        return (buttons, y);
+    }
+
     let mut x = area.x;
+    let mut row_y = y;
     let max_x = area.x.saturating_add(area.width);
-    for action in [
-        SelectionAction::Copy,
-        SelectionAction::Cut,
-        SelectionAction::Delete,
-        SelectionAction::Stamp,
-        SelectionAction::Clear,
-    ] {
-        let width = u16::try_from(action.label().chars().count()).unwrap_or(0) + 2;
+
+    for action in SELECTION_ACTIONS {
+        let width =
+            (u16::try_from(action.label().chars().count()).unwrap_or(0) + 2).min(area.width);
+
+        if x != area.x && x.saturating_add(width) > max_x {
+            row_y = row_y.saturating_add(1);
+            if row_y >= max_y {
+                break;
+            }
+            x = area.x;
+        }
+
         if x.saturating_add(width) > max_x {
             break;
         }
 
-        let button = Rect {
-            x,
-            y: *y,
-            width,
-            height: 1,
-        };
-        let style = choice_style(false, app.hovered_selection_action == Some(action));
-        fill_rect(frame, button, style);
-        draw_text_centered(frame, button, button.y, action.label(), style);
-        app.selection_action_areas.push(ButtonHit {
-            action,
-            area: button,
+        buttons.push(ButtonHit {
+            action: *action,
+            area: Rect {
+                x,
+                y: row_y,
+                width,
+                height: 1,
+            },
         });
         x = x.saturating_add(width + 1);
     }
-    *y = y.saturating_add(1);
+
+    let next_y = buttons
+        .last()
+        .map(|hit| hit.area.y.saturating_add(1))
+        .unwrap_or(y);
+    (buttons, next_y)
 }
 
 fn draw_sidebar_spacer(y: &mut u16, max_y: u16) {
@@ -5388,6 +5423,29 @@ mod tests {
             app.project.styles[app.current_style].attrs,
             vec![TextAttr::Underline]
         );
+    }
+
+    #[test]
+    fn selection_actions_wrap_to_keep_clear_visible() {
+        let (buttons, next_y) = selection_action_layout(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 4,
+            },
+            0,
+            4,
+        );
+
+        let clear = buttons
+            .iter()
+            .find(|button| button.action == SelectionAction::Clear)
+            .expect("clear action should be visible");
+
+        assert_eq!(buttons.len(), SELECTION_ACTIONS.len());
+        assert!(clear.area.y > 0);
+        assert!(next_y > clear.area.y);
     }
 
     #[test]
