@@ -1,60 +1,62 @@
-# Terminal Animator Docs
+# Terminal Animator
 
-Terminal Animator is a mouse-first terminal art and animation editor. The
-initial design target is simple: make it easy to draw terminal scenes by hand,
-preview them as animations, and export them into terminal applications without
-rewriting the art in Rust.
+Terminal Animator is a little editor for drawing terminal art by hand.
 
-## Documents
+You pick a character, pick some colors, and paint on a grid. You can make still
+images, simple frame animations, and export the result when you want to use it
+somewhere else.
 
-- [Product spec](product-spec.md): user workflows, UI layout, tools, animation
-  behavior, and validation expectations.
-- [File format v1](file-format-v1.md): canonical `.tanim.toml` project format,
-  validation rules, export formats, and migration policy.
-- [Host integration](host-integration.md): how terminal applications should
-  consume Terminal Animator assets safely and efficiently.
+The main file format is `.tanim.toml`. Plain text and ANSI are export formats
+for sharing or previewing.
 
-## Key Decisions
+## Install
 
-- The canonical save format is `.tanim.toml`, not raw ANSI escape output.
-- ANSI and plain text are export formats only.
-- Coordinates are zero-based terminal cell positions, with `x` increasing right
-  and `y` increasing down.
-- Version 1 stores one image or animation asset per file.
-- Frames are sparse: omitted cells are transparent, and explicit space cells are
-  real painted cells.
-- The format supports foreground color, background color, and text attributes so
-  block art can avoid "holes" where colored details replace a colored body.
-- Schema version 1 is the file-format contract; implementation phases are
-  separate milestones and should start narrower than the full format.
+For now, build it from source:
 
-## Current Implementation Highlights
+```sh
+cargo install --path .
+```
 
-- Mouse-first editor with pencil, eraser, eyedropper, flood fill, text, line,
-  rectangle, and filled-rectangle tools.
-- Clickable foreground/background color targets, swatches, character palette,
-  style attributes, cohesive expanded palette, and RGB mixer controls.
-- Rectangle selection with copy, cut, delete, move, and reusable stamp paste
-  workflows.
-- Still image and basic animation editing with frame navigation, duplicate,
-  blank/delete frame, per-frame duration editing, duration-based playback, and
-  previous-frame onion skin.
-- Clickable top-bar actions for frame controls, playback, undo/redo, save,
-  export, and quit, with animation controls hidden for still images.
-- Save/load for canonical `.tanim.toml` files with clickable file browsing,
-  remembered last directory, recent custom colors, and save-as overwrite
-  confirmation.
-- Plain text and ANSI export from the interactive app and CLI:
-  `terminal_animator --export text input.tanim.toml output.txt`
-  or `terminal_animator --export ansi input.tanim.toml output.ansi`.
+Then run it:
 
-## Compatibility Contract
+```sh
+terminal_animator
+```
 
-The file-format details above are intentional integration points. Do not change
-coordinate semantics, sparse transparency behavior, frame timing, style
-resolution, normalized layout metadata, frame count rules, resource limits, or
-composition order without a schema migration.
+You can also run it without installing:
+
+```sh
+cargo run
+```
+
+## Getting Started
+
+Open the app and choose `New Image`, `New Animation`, or `Open File`.
+
+Most things are clickable:
+
+- Click and drag on the canvas to draw.
+- Click the current tool to switch tools.
+- Click colors, characters, and style options in the sidebar.
+- Click `Save`, `Save As`, `Export`, or `Quit` in the top bar.
+- Use the file browser to open or save `.tanim.toml` files.
+
+Useful keyboard shortcuts:
+
+- `Ctrl-S`: save.
+- `Ctrl-Shift-S`: save as.
+- `Ctrl-Z` / `Ctrl-Y`: undo and redo.
+- `Esc`: cancel the thing you are doing.
+- Mouse wheel or PageUp/PageDown: scroll bigger pickers and file lists.
+
+Save As lets you type just the name. The app adds `.tanim.toml` for you.
+
+## More Detail
+
+- [Product spec](product-spec.md)
+- [File format v1](file-format-v1.md)
+- [Host integration](host-integration.md)
 
 ## License
 
-Terminal Animator is licensed under Apache-2.0. See [LICENSE](../LICENSE).
+Apache-2.0. See [LICENSE](../LICENSE).

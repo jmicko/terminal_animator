@@ -123,7 +123,8 @@ The default workbench should have five regions.
 
 Top Bar:
 File actions, asset name, unsaved indicator, animation playback state, and
-current frame position.
+current frame position. Animation controls should only appear for animation
+assets.
 
 Tool And Palette Area:
 Paint tools, character palette, foreground and background color swatches,
@@ -259,9 +260,31 @@ The editor should support:
 - Reusable named styles.
 - Recent styles.
 - Project palette styles.
+- Mouse-friendly color picking with an expanded palette and RGB mixer.
+- Recent custom colors for colors chosen outside the default palette.
 
 Colors are stored as sRGB hex values. Renderers can map those colors to the
 nearest available terminal color if truecolor is unavailable.
+
+## File Browser And Preferences
+
+Open and Save As should use a mouse-friendly file browser rather than requiring
+the user to type paths from memory.
+
+Expected behavior:
+
+- Default to the last used directory, then the user's home directory, then the
+  current working directory.
+- Store lightweight preferences in a local config file. A database is not
+  needed.
+- Hide dot-prefixed folders and files by default, with a visible toggle to show
+  them.
+- Save As should let the user edit the base file name without deleting the
+  `.tanim.toml` suffix by hand.
+- Save As should append `.tanim.toml` automatically when the user types a base
+  name.
+- Save As should warn before overwriting an existing file.
+- Recent custom colors may also live in the same config file.
 
 ## Mouse Controls
 
@@ -347,6 +370,8 @@ The first implementation should support simple file-oriented startup behavior:
   image with the given dimensions and target save path.
 - `terminal_animator --export text input.tanim.toml output.txt`: exports without
   opening the interactive editor.
+- `terminal_animator --export ansi input.tanim.toml output.ansi`: exports ANSI
+  output without opening the interactive editor.
 
 Save behavior:
 
