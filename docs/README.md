@@ -41,7 +41,8 @@ rewriting the art in Rust.
   previous-frame onion skin.
 - Clickable top-bar actions for frame controls, playback, undo/redo, save,
   export, and quit, with animation controls hidden for still images.
-- Save/load for canonical `.tanim.toml` files with save-as overwrite
+- Save/load for canonical `.tanim.toml` files with clickable file browsing,
+  remembered last directory, recent custom colors, and save-as overwrite
   confirmation.
 - Plain text and ANSI export from the interactive app and CLI:
   `terminal_animator --export text input.tanim.toml output.txt`

@@ -18,7 +18,9 @@ use ratatui::style::{Color as TuiColor, Modifier, Style as TuiStyle};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -641,6 +643,7 @@ enum Modal {
     SaveAs {
         input: String,
     },
+    FileBrowser(FileBrowser),
     OverwriteConfirm {
         path: PathBuf,
     },
@@ -680,6 +683,98 @@ enum Modal {
     ExportMenu,
     ToolMenu,
     QuitConfirm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AppConfig {
+    #[serde(default)]
+    last_directory: Option<String>,
+    #[serde(default)]
+    recent_colors: Vec<String>,
+}
+
+impl AppConfig {
+    fn last_directory_path(&self) -> Option<PathBuf> {
+        self.last_directory
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn set_last_directory(&mut self, directory: &Path) {
+        self.last_directory = Some(directory.display().to_string());
+    }
+
+    fn recent_extra_colors(&self) -> Vec<Color> {
+        self.recent_colors
+            .iter()
+            .filter_map(|color| Color::parse_hex(color))
+            .filter(|color| !is_visible_palette_color(*color))
+            .take(MAX_RECENT_COLORS)
+            .collect()
+    }
+
+    fn set_recent_extra_colors(&mut self, colors: &[Color]) {
+        self.recent_colors = colors
+            .iter()
+            .copied()
+            .filter(|color| !is_visible_palette_color(*color))
+            .take(MAX_RECENT_COLORS)
+            .map(|color| color.to_hex())
+            .collect();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FileBrowser {
+    mode: FileBrowserMode,
+    cwd: PathBuf,
+    filename: String,
+    entries: Vec<FileEntry>,
+    scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileBrowserMode {
+    Open,
+    SaveAs,
+}
+
+impl FileBrowserMode {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Open => "Open File",
+            Self::SaveAs => "Save As",
+        }
+    }
+
+    fn confirm_label(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::SaveAs => "Save",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileEntry {
+    name: String,
+    path: PathBuf,
+    kind: FileEntryKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileEntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileBrowserAction {
+    Parent,
+    Entry(usize),
+    Confirm,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -774,6 +869,7 @@ struct AppState {
     screen: Screen,
     project: Project,
     file_path: Option<PathBuf>,
+    config: AppConfig,
     dirty: bool,
     tool: Tool,
     brush_char: char,
@@ -805,6 +901,7 @@ struct AppState {
     modal_action_areas: Vec<ButtonHit<ModalAction>>,
     modal_color_areas: Vec<ButtonHit<usize>>,
     modal_rgb_areas: Vec<ButtonHit<RgbControl>>,
+    modal_file_areas: Vec<ButtonHit<FileBrowserAction>>,
     modal_area: Rect,
     recent_extra_colors: Vec<Color>,
     color_picker_scroll_row: usize,
@@ -824,6 +921,7 @@ struct AppState {
     hovered_modal_action: Option<ModalAction>,
     hovered_modal_color: Option<usize>,
     hovered_rgb_control: Option<RgbControl>,
+    hovered_file_action: Option<FileBrowserAction>,
     dragging_rgb_channel: Option<RgbChannel>,
     hovered_canvas_cell: Option<(u16, u16)>,
     undo_stack: Vec<Stroke>,
@@ -879,10 +977,13 @@ impl AppState {
     }
 
     fn welcome(message: impl Into<String>) -> Self {
+        let config = load_app_config();
+        let recent_extra_colors = config.recent_extra_colors();
         Self {
             screen: Screen::Welcome,
             project: Project::new_image("untitled", DEFAULT_NEW_WIDTH, DEFAULT_NEW_HEIGHT),
             file_path: None,
+            config,
             dirty: false,
             tool: Tool::Pencil,
             brush_char: '#',
@@ -914,8 +1015,9 @@ impl AppState {
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
             modal_rgb_areas: Vec::new(),
+            modal_file_areas: Vec::new(),
             modal_area: Rect::default(),
-            recent_extra_colors: Vec::new(),
+            recent_extra_colors,
             color_picker_scroll_row: 0,
             color_target: ColorTarget::Foreground,
             hovered_palette: None,
@@ -933,6 +1035,7 @@ impl AppState {
             hovered_modal_action: None,
             hovered_modal_color: None,
             hovered_rgb_control: None,
+            hovered_file_action: None,
             dragging_rgb_channel: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
@@ -950,10 +1053,13 @@ impl AppState {
         dirty: bool,
         message: impl Into<String>,
     ) -> Self {
+        let config = load_app_config();
+        let recent_extra_colors = config.recent_extra_colors();
         Self {
             screen: Screen::Editor,
             project,
             file_path,
+            config,
             dirty,
             tool: Tool::Pencil,
             brush_char: '#',
@@ -985,8 +1091,9 @@ impl AppState {
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
             modal_rgb_areas: Vec::new(),
+            modal_file_areas: Vec::new(),
             modal_area: Rect::default(),
-            recent_extra_colors: Vec::new(),
+            recent_extra_colors,
             color_picker_scroll_row: 0,
             color_target: ColorTarget::Foreground,
             hovered_palette: None,
@@ -1004,6 +1111,7 @@ impl AppState {
             hovered_modal_action: None,
             hovered_modal_color: None,
             hovered_rgb_control: None,
+            hovered_file_action: None,
             dragging_rgb_channel: None,
             hovered_canvas_cell: None,
             undo_stack: Vec::new(),
@@ -1028,6 +1136,23 @@ impl AppState {
         self.current_frame_index
             .checked_sub(1)
             .and_then(|index| self.project.frames.get(index))
+    }
+
+    fn default_browser_directory(&self) -> PathBuf {
+        self.config
+            .last_directory_path()
+            .filter(|path| path.is_dir())
+            .or_else(home_dir)
+            .or_else(|| env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn remember_path_directory(&mut self, path: &Path) {
+        let Some(directory) = path.parent() else {
+            return;
+        };
+        self.config.set_last_directory(directory);
+        let _ = save_app_config(&self.config);
     }
 
     fn is_animation_mode(&self) -> bool {
@@ -1090,9 +1215,7 @@ impl AppState {
                 });
             }
             KeyCode::Char('o') | KeyCode::Char('O') => {
-                self.modal = Some(Modal::OpenFile {
-                    input: String::new(),
-                });
+                self.open_file_browser();
             }
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                 self.should_quit = true;
@@ -1304,6 +1427,11 @@ impl AppState {
             return;
         }
 
+        if matches!(self.modal, Some(Modal::FileBrowser(_))) {
+            self.handle_file_browser_key(key);
+            return;
+        }
+
         if matches!(self.modal, Some(Modal::ExportMenu)) {
             match key.code {
                 KeyCode::Esc => self.close_modal("Export canceled"),
@@ -1402,54 +1530,11 @@ impl AppState {
             },
             Modal::OpenFile { input } => {
                 let path = PathBuf::from(input.trim());
-                if path.as_os_str().is_empty() {
-                    self.message = "Path cannot be empty".to_string();
-                    self.modal = Some(Modal::OpenFile {
-                        input: String::new(),
-                    });
-                    return;
-                }
-
-                if path.exists() {
-                    match load_project_from_path(&path) {
-                        Ok(loaded) => {
-                            let warning_count = loaded.warnings.len();
-                            *self = Self::editor(
-                                loaded.project,
-                                Some(path),
-                                false,
-                                format!("Opened file with {warning_count} warning(s)"),
-                            );
-                        }
-                        Err(error) => {
-                            self.message = format!("Open failed: {error}");
-                        }
-                    }
-                } else {
-                    self.modal = Some(Modal::NewImage {
-                        input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
-                        target_path: Some(path),
-                    });
-                    self.message =
-                        "File does not exist. Enter dimensions to create it.".to_string();
-                }
+                self.commit_open_path(path, Some(input));
             }
             Modal::SaveAs { input } => {
                 let path = PathBuf::from(input.trim());
-                if path.as_os_str().is_empty() {
-                    self.message = "Save path cannot be empty".to_string();
-                    self.open_save_as();
-                    return;
-                }
-
-                if path.exists() {
-                    self.message = format!("Confirm overwrite {}", path.display());
-                    self.modal = Some(Modal::OverwriteConfirm { path });
-                    return;
-                }
-
-                self.file_path = Some(path);
-                self.save();
+                self.commit_save_as_path(path, Some(input));
             }
             Modal::OverwriteConfirm { path } => {
                 self.file_path = Some(path);
@@ -1595,6 +1680,7 @@ impl AppState {
                 }
             }
             Modal::ColorPicker => {}
+            Modal::FileBrowser(_) => {}
             Modal::ExportMenu => {}
             Modal::ToolMenu => {}
             Modal::QuitConfirm => {}
@@ -1753,6 +1839,23 @@ impl AppState {
             return;
         }
 
+        if matches!(self.modal, Some(Modal::FileBrowser(_))) {
+            self.hovered_file_action = self.modal_file_action_at(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.scroll_file_browser(1),
+                MouseEventKind::ScrollUp => self.scroll_file_browser(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(action) = self.hovered_file_action {
+                        self.run_file_browser_action(action);
+                    } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                        self.close_modal("File browser closed");
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         self.hovered_modal_action = self.modal_action_at(mouse.column, mouse.row);
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             if let Some(action) = self.hovered_modal_action {
@@ -1786,6 +1889,47 @@ impl AppState {
                 self.dragging_rgb_channel = None;
             }
             _ => {}
+        }
+    }
+
+    fn handle_file_browser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.close_modal("File browser closed"),
+            KeyCode::Enter => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.take() {
+                    self.confirm_file_browser(browser);
+                }
+            }
+            KeyCode::PageDown | KeyCode::Down => self.scroll_file_browser(1),
+            KeyCode::PageUp | KeyCode::Up => self.scroll_file_browser(-1),
+            KeyCode::Backspace => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+                    browser.filename.pop();
+                }
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+                    browser.filename.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scroll_file_browser(&mut self, delta_rows: isize) {
+        let list_rows = usize::from(self.file_browser_visible_rows());
+        if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+            let parent_rows = usize::from(browser.cwd.parent().is_some());
+            let visible_rows = list_rows.saturating_sub(parent_rows).max(1);
+            let max_scroll = browser.entries.len().saturating_sub(visible_rows);
+            browser.scroll = if delta_rows.is_negative() {
+                browser.scroll.saturating_sub(delta_rows.unsigned_abs())
+            } else {
+                browser
+                    .scroll
+                    .saturating_add(delta_rows as usize)
+                    .min(max_scroll)
+            };
         }
     }
 
@@ -1878,6 +2022,13 @@ impl AppState {
 
     fn modal_rgb_control_at(&self, column: u16, row: u16) -> Option<RgbControl> {
         self.modal_rgb_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn modal_file_action_at(&self, column: u16, row: u16) -> Option<FileBrowserAction> {
+        self.modal_file_areas
             .iter()
             .find(|hit| rect_contains(hit.area, column, row))
             .map(|hit| hit.action)
@@ -2583,6 +2734,9 @@ impl AppState {
             .retain(|recent_color| *recent_color != color);
         self.recent_extra_colors.insert(0, color);
         self.recent_extra_colors.truncate(MAX_RECENT_COLORS);
+        self.config
+            .set_recent_extra_colors(&self.recent_extra_colors);
+        let _ = save_app_config(&self.config);
     }
 
     fn apply_tool_at_screen(&mut self, column: u16, row: u16) {
@@ -3019,11 +3173,167 @@ impl AppState {
                 });
             }
             WelcomeAction::OpenFile => {
-                self.modal = Some(Modal::OpenFile {
-                    input: String::new(),
-                });
+                self.open_file_browser();
             }
             WelcomeAction::Quit => self.should_quit = true,
+        }
+    }
+
+    fn commit_open_path(&mut self, path: PathBuf, original_input: Option<String>) {
+        if path.as_os_str().is_empty() {
+            self.message = "Path cannot be empty".to_string();
+            if let Some(input) = original_input {
+                self.modal = Some(Modal::OpenFile { input });
+            }
+            return;
+        }
+
+        if path.is_dir() {
+            self.modal = Some(Modal::FileBrowser(file_browser_for(
+                FileBrowserMode::Open,
+                path,
+                String::new(),
+            )));
+            self.hovered_file_action = None;
+            self.message = "Choose a .tanim.toml file".to_string();
+            return;
+        }
+
+        if path.exists() {
+            match load_project_from_path(&path) {
+                Ok(loaded) => {
+                    let warning_count = loaded.warnings.len();
+                    let mut next = Self::editor(
+                        loaded.project,
+                        Some(path.clone()),
+                        false,
+                        format!("Opened file with {warning_count} warning(s)"),
+                    );
+                    next.config = self.config.clone();
+                    next.remember_path_directory(&path);
+                    *self = next;
+                }
+                Err(error) => {
+                    self.message = format!("Open failed: {error}");
+                }
+            }
+        } else {
+            self.modal = Some(Modal::NewImage {
+                input: format!("{DEFAULT_NEW_WIDTH}x{DEFAULT_NEW_HEIGHT}"),
+                target_path: Some(path),
+            });
+            self.message = "File does not exist. Enter dimensions to create it.".to_string();
+        }
+    }
+
+    fn commit_save_as_path(&mut self, path: PathBuf, original_input: Option<String>) {
+        if path.as_os_str().is_empty() {
+            self.message = "Save path cannot be empty".to_string();
+            if let Some(input) = original_input {
+                self.modal = Some(Modal::SaveAs { input });
+            } else {
+                self.open_save_as();
+            }
+            return;
+        }
+
+        if path.is_dir() {
+            self.modal = Some(Modal::FileBrowser(file_browser_for(
+                FileBrowserMode::SaveAs,
+                path,
+                String::new(),
+            )));
+            self.hovered_file_action = None;
+            self.message = "Choose save location".to_string();
+            return;
+        }
+
+        if path.exists() {
+            self.message = format!("Confirm overwrite {}", path.display());
+            self.modal = Some(Modal::OverwriteConfirm { path });
+            return;
+        }
+
+        self.file_path = Some(path);
+        self.save();
+    }
+
+    fn confirm_file_browser(&mut self, browser: FileBrowser) {
+        if browser.filename.trim().is_empty() {
+            self.message = match browser.mode {
+                FileBrowserMode::Open => "Choose a file to open".to_string(),
+                FileBrowserMode::SaveAs => "Enter a file name to save".to_string(),
+            };
+            self.modal = Some(Modal::FileBrowser(browser));
+            return;
+        }
+
+        let path = file_browser_target_path(&browser);
+        match browser.mode {
+            FileBrowserMode::Open => self.commit_open_path(path, None),
+            FileBrowserMode::SaveAs => self.commit_save_as_path(path, None),
+        }
+    }
+
+    fn open_browser_directory(&mut self, directory: PathBuf) {
+        let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() else {
+            return;
+        };
+
+        let cwd = usable_directory(directory);
+        browser.cwd = cwd;
+        browser.entries = read_file_browser_entries(&browser.cwd);
+        browser.scroll = 0;
+        if browser.mode == FileBrowserMode::Open {
+            browser.filename.clear();
+        }
+        self.hovered_file_action = None;
+        self.message = format!("Browsing {}", browser.cwd.display());
+    }
+
+    fn handle_file_browser_entry(&mut self, index: usize) {
+        let Some(Modal::FileBrowser(browser)) = self.modal.as_ref() else {
+            return;
+        };
+        let Some(entry) = browser.entries.get(index).cloned() else {
+            return;
+        };
+
+        match entry.kind {
+            FileEntryKind::Directory => self.open_browser_directory(entry.path),
+            FileEntryKind::File => match browser.mode {
+                FileBrowserMode::Open => {
+                    self.modal = None;
+                    self.commit_open_path(entry.path, None);
+                }
+                FileBrowserMode::SaveAs => {
+                    if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+                        browser.filename = entry.name;
+                    }
+                    self.message = "Selected save name".to_string();
+                }
+            },
+        }
+    }
+
+    fn run_file_browser_action(&mut self, action: FileBrowserAction) {
+        match action {
+            FileBrowserAction::Parent => {
+                let parent = self.modal.as_ref().and_then(|modal| match modal {
+                    Modal::FileBrowser(browser) => browser.cwd.parent().map(Path::to_path_buf),
+                    _ => None,
+                });
+                if let Some(parent) = parent {
+                    self.open_browser_directory(parent);
+                }
+            }
+            FileBrowserAction::Entry(index) => self.handle_file_browser_entry(index),
+            FileBrowserAction::Confirm => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.take() {
+                    self.confirm_file_browser(browser);
+                }
+            }
+            FileBrowserAction::Cancel => self.close_modal("File browser closed"),
         }
     }
 
@@ -3056,6 +3366,7 @@ impl AppState {
         self.hovered_modal_tool = None;
         self.hovered_modal_color = None;
         self.hovered_rgb_control = None;
+        self.hovered_file_action = None;
         self.dragging_rgb_channel = None;
         self.message = message.into();
     }
@@ -3123,9 +3434,37 @@ impl AppState {
         }
     }
 
+    fn file_browser_list_area(&self) -> Rect {
+        if self.modal_area.width < 4 || self.modal_area.height < 10 {
+            return Rect::default();
+        }
+
+        Rect {
+            x: self.modal_area.x + 2,
+            y: self.modal_area.y + 4,
+            width: self.modal_area.width.saturating_sub(4),
+            height: self.modal_area.height.saturating_sub(9),
+        }
+    }
+
+    fn file_browser_visible_rows(&self) -> u16 {
+        self.file_browser_list_area().height
+    }
+
     fn open_export_menu(&mut self) {
         self.modal = Some(Modal::ExportMenu);
         self.message = "Choose export format".to_string();
+    }
+
+    fn open_file_browser(&mut self) {
+        let cwd = self.default_browser_directory();
+        self.modal = Some(Modal::FileBrowser(file_browser_for(
+            FileBrowserMode::Open,
+            cwd,
+            String::new(),
+        )));
+        self.hovered_file_action = None;
+        self.message = "Choose a .tanim.toml file".to_string();
     }
 
     fn open_export_text(&mut self) {
@@ -3167,6 +3506,7 @@ impl AppState {
         match save_project_to_path(&self.project, &path) {
             Ok(warnings) => {
                 self.dirty = false;
+                self.remember_path_directory(&path);
                 self.message = if warnings.is_empty() {
                     format!("Saved {}", path.display())
                 } else {
@@ -3184,12 +3524,24 @@ impl AppState {
     }
 
     fn open_save_as(&mut self) {
-        let input = self
+        let cwd = self
             .file_path
             .as_ref()
-            .map(|path| path.display().to_string())
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| self.default_browser_directory());
+        let filename = self
+            .file_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "untitled.tanim.toml".to_string());
-        self.modal = Some(Modal::SaveAs { input });
+        self.modal = Some(Modal::FileBrowser(file_browser_for(
+            FileBrowserMode::SaveAs,
+            cwd,
+            filename,
+        )));
+        self.hovered_file_action = None;
+        self.message = "Choose save location".to_string();
     }
 
     fn request_quit(&mut self) {
@@ -4305,6 +4657,67 @@ fn style_id_base_for_variant(fg: Color, bg: Option<Color>, attrs: &[TextAttr]) -
     id
 }
 
+#[cfg(not(test))]
+fn load_app_config() -> AppConfig {
+    let Some(path) = app_config_path() else {
+        return AppConfig::default();
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return AppConfig::default();
+    };
+
+    toml::from_str(&contents).unwrap_or_default()
+}
+
+#[cfg(test)]
+fn load_app_config() -> AppConfig {
+    AppConfig::default()
+}
+
+#[cfg(not(test))]
+fn save_app_config(config: &AppConfig) -> io::Result<()> {
+    let Some(path) = app_config_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let contents = toml::to_string_pretty(config).map_err(io::Error::other)?;
+    fs::write(path, contents)
+}
+
+#[cfg(test)]
+fn save_app_config(_config: &AppConfig) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn app_config_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("TERMINAL_ANIMATOR_CONFIG").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+
+    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME").filter(|path| !path.is_empty()) {
+        return Some(
+            PathBuf::from(config_home)
+                .join("terminal_animator")
+                .join("config.toml"),
+        );
+    }
+
+    home_dir().map(|home| {
+        home.join(".config")
+            .join("terminal_animator")
+            .join("config.toml")
+    })
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
 fn normalize_attrs(attrs: Vec<TextAttr>) -> Vec<TextAttr> {
     ATTR_CHOICES
         .iter()
@@ -4542,6 +4955,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     app.modal_action_areas.clear();
     app.modal_color_areas.clear();
     app.modal_rgb_areas.clear();
+    app.modal_file_areas.clear();
 
     if matches!(modal, Modal::ToolMenu) {
         draw_tool_menu(frame, app);
@@ -4555,6 +4969,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
 
     if let Modal::RgbInput { color } = modal {
         draw_rgb_picker(frame, app, color);
+        return;
+    }
+
+    if let Modal::FileBrowser(browser) = modal {
+        draw_file_browser(frame, app, browser);
         return;
     }
 
@@ -4590,6 +5009,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::SetFg { input } => ("Foreground", format!("Color: {input}")),
         Modal::SetBg { input } => ("Background", format!("Color: {input}")),
         Modal::FrameDuration { input } => ("Frame Duration", format!("Milliseconds: {input}")),
+        Modal::FileBrowser(_) => unreachable!("file browser is drawn separately"),
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
         Modal::ExportAnsi { input } => ("Export ANSI", format!("Path: {input}")),
         Modal::ColorPicker => unreachable!("color picker is drawn separately"),
@@ -5013,6 +5433,180 @@ fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
     );
 }
 
+fn draw_file_browser(frame: &mut Frame<'_>, app: &mut AppState, browser: FileBrowser) {
+    let area = centered_rect(86, 24, frame.area());
+    app.modal_area = area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(browser.mode.title())
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        inner.width,
+        &format!("Folder: {}", browser.cwd.display()),
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+    draw_text(
+        frame,
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        "Click folders/files. Type a name below. Wheel/PageUp/PageDown scroll.",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let list_area = app.file_browser_list_area();
+    draw_file_browser_rows(frame, app, &browser, list_area);
+
+    let name_y = inner.y + inner.height.saturating_sub(3);
+    draw_text(
+        frame,
+        inner.x,
+        name_y,
+        inner.width,
+        &format!("Name: {}", browser.filename),
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+
+    draw_file_browser_buttons(frame, app, area, browser.mode);
+}
+
+fn draw_file_browser_rows(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    browser: &FileBrowser,
+    area: Rect,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let mut y = area.y;
+    if browser.cwd.parent().is_some() && y < area.y.saturating_add(area.height) {
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        let style = choice_style(
+            false,
+            app.hovered_file_action == Some(FileBrowserAction::Parent),
+        );
+        fill_rect(frame, row, style);
+        draw_text(frame, row.x, row.y, row.width, "[..]", style);
+        app.modal_file_areas.push(ButtonHit {
+            action: FileBrowserAction::Parent,
+            area: row,
+        });
+        y = y.saturating_add(1);
+    }
+
+    let rows_left = area.y.saturating_add(area.height).saturating_sub(y);
+    let visible_count = usize::from(rows_left);
+    let start = browser.scroll.min(browser.entries.len());
+    let end = start
+        .saturating_add(visible_count)
+        .min(browser.entries.len());
+
+    for index in start..end {
+        let Some(entry) = browser.entries.get(index) else {
+            break;
+        };
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        let hovered = app.hovered_file_action == Some(FileBrowserAction::Entry(index));
+        let style = file_entry_style(entry.kind, hovered);
+        fill_rect(frame, row, style);
+        draw_text(
+            frame,
+            row.x,
+            row.y,
+            row.width,
+            &file_entry_label(entry),
+            style,
+        );
+        app.modal_file_areas.push(ButtonHit {
+            action: FileBrowserAction::Entry(index),
+            area: row,
+        });
+        y = y.saturating_add(1);
+    }
+
+    if browser.entries.is_empty() && y < area.y.saturating_add(area.height) {
+        draw_text(
+            frame,
+            area.x,
+            y,
+            area.width,
+            "(no .tanim.toml files here)",
+            TuiStyle::default().fg(TuiColor::Rgb(115, 130, 140)),
+        );
+    }
+}
+
+fn draw_file_browser_buttons(
+    frame: &mut Frame<'_>,
+    app: &mut AppState,
+    modal_area: Rect,
+    mode: FileBrowserMode,
+) {
+    let buttons = [
+        (FileBrowserAction::Confirm, mode.confirm_label()),
+        (FileBrowserAction::Cancel, "Cancel"),
+    ];
+    let total_width: u16 = buttons
+        .iter()
+        .map(|(_, label)| u16::try_from(label.chars().count()).unwrap_or(0) + 4)
+        .sum::<u16>()
+        .saturating_add(1);
+    let mut x = modal_area.x + modal_area.width.saturating_sub(total_width) / 2;
+    let y = modal_area.y + modal_area.height.saturating_sub(2);
+
+    for (action, label) in buttons {
+        let width = u16::try_from(label.chars().count()).unwrap_or(0) + 4;
+        let area = Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        };
+        let style = choice_style(false, app.hovered_file_action == Some(action));
+        fill_rect(frame, area, style);
+        draw_text_centered(frame, area, y, label, style);
+        app.modal_file_areas.push(ButtonHit { action, area });
+        x = x.saturating_add(width + 1);
+    }
+}
+
+fn file_entry_label(entry: &FileEntry) -> String {
+    match entry.kind {
+        FileEntryKind::Directory => format!("[dir] {}/", entry.name),
+        FileEntryKind::File => format!("      {}", entry.name),
+    }
+}
+
+fn file_entry_style(kind: FileEntryKind, hovered: bool) -> TuiStyle {
+    if hovered {
+        return hover_style();
+    }
+
+    match kind {
+        FileEntryKind::Directory => TuiStyle::default().fg(TuiColor::Rgb(79, 209, 197)),
+        FileEntryKind::File => TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    }
+}
+
 fn draw_modal_buttons(
     frame: &mut Frame<'_>,
     app: &mut AppState,
@@ -5144,6 +5738,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::ExportAnsi { input } => Some(input),
         Modal::OverwriteConfirm { .. }
         | Modal::DeleteFrameConfirm
+        | Modal::FileBrowser(_)
         | Modal::RgbInput { .. }
         | Modal::ColorPicker
         | Modal::ExportMenu
@@ -5272,6 +5867,85 @@ fn unique_style_id(project: &Project, base: &str) -> String {
     }
 
     unreachable!("unbounded style ID search")
+}
+
+fn file_browser_for(mode: FileBrowserMode, cwd: PathBuf, filename: String) -> FileBrowser {
+    let cwd = usable_directory(cwd);
+    let entries = read_file_browser_entries(&cwd);
+    FileBrowser {
+        mode,
+        cwd,
+        filename,
+        entries,
+        scroll: 0,
+    }
+}
+
+fn usable_directory(path: PathBuf) -> PathBuf {
+    if path.is_dir() {
+        path
+    } else {
+        home_dir()
+            .or_else(|| env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+fn read_file_browser_entries(cwd: &Path) -> Vec<FileEntry> {
+    let mut entries = fs::read_dir(cwd)
+        .ok()
+        .into_iter()
+        .flat_map(|read_dir| read_dir.filter_map(Result::ok))
+        .filter_map(|entry| file_browser_entry(entry.path()))
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|a, b| {
+        let kind_order = match (a.kind, b.kind) {
+            (FileEntryKind::Directory, FileEntryKind::File) => std::cmp::Ordering::Less,
+            (FileEntryKind::File, FileEntryKind::Directory) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        };
+        kind_order.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    entries
+}
+
+fn file_browser_entry(path: PathBuf) -> Option<FileEntry> {
+    let metadata = fs::metadata(&path).ok()?;
+    let name = path.file_name()?.to_string_lossy().to_string();
+
+    if metadata.is_dir() {
+        Some(FileEntry {
+            name,
+            path,
+            kind: FileEntryKind::Directory,
+        })
+    } else if metadata.is_file() && is_project_file_path(&path) {
+        Some(FileEntry {
+            name,
+            path,
+            kind: FileEntryKind::File,
+        })
+    } else {
+        None
+    }
+}
+
+fn is_project_file_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".tanim.toml"))
+}
+
+fn file_browser_target_path(browser: &FileBrowser) -> PathBuf {
+    let input = browser.filename.trim();
+    let path = PathBuf::from(input);
+    if path.is_absolute() {
+        path
+    } else {
+        browser.cwd.join(path)
+    }
 }
 
 fn format_save_error(error: FormatError) -> String {
@@ -6225,7 +6899,116 @@ mod tests {
 
         app.close_modal("");
         app.run_welcome_action(WelcomeAction::OpenFile);
-        assert!(matches!(app.modal, Some(Modal::OpenFile { .. })));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::FileBrowser(FileBrowser {
+                mode: FileBrowserMode::Open,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn file_browser_lists_project_files_and_directories() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(dir.path().join("folder")).expect("create folder");
+        fs::write(dir.path().join("scene.tanim.toml"), "").expect("write project file");
+        fs::write(dir.path().join("notes.txt"), "").expect("write ignored file");
+
+        let entries = read_file_browser_entries(dir.path());
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "folder");
+        assert_eq!(entries[0].kind, FileEntryKind::Directory);
+        assert_eq!(entries[1].name, "scene.tanim.toml");
+        assert_eq!(entries[1].kind, FileEntryKind::File);
+    }
+
+    #[test]
+    fn save_as_browser_defaults_to_current_file_location() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("scene.tanim.toml");
+        let mut app = AppState::editor(
+            Project::new_image("save", 4, 2),
+            Some(path.clone()),
+            true,
+            "",
+        );
+
+        app.open_save_as();
+
+        let Some(Modal::FileBrowser(browser)) = app.modal else {
+            panic!("expected file browser");
+        };
+        assert_eq!(browser.mode, FileBrowserMode::SaveAs);
+        assert_eq!(browser.cwd, dir.path());
+        assert_eq!(browser.filename, "scene.tanim.toml");
+    }
+
+    #[test]
+    fn file_browser_confirm_requires_filename() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = AppState::welcome("");
+
+        app.confirm_file_browser(file_browser_for(
+            FileBrowserMode::Open,
+            dir.path().to_path_buf(),
+            String::new(),
+        ));
+
+        assert!(matches!(app.modal, Some(Modal::FileBrowser(_))));
+        assert_eq!(app.message, "Choose a file to open");
+    }
+
+    #[test]
+    fn file_browser_confirming_directory_navigates() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let child = dir.path().join("child");
+        fs::create_dir(&child).expect("create child dir");
+        let mut app = AppState::welcome("");
+
+        app.confirm_file_browser(file_browser_for(
+            FileBrowserMode::Open,
+            dir.path().to_path_buf(),
+            "child".to_string(),
+        ));
+
+        let Some(Modal::FileBrowser(browser)) = app.modal else {
+            panic!("expected file browser");
+        };
+        assert_eq!(browser.mode, FileBrowserMode::Open);
+        assert_eq!(browser.cwd, child);
+        assert!(browser.filename.is_empty());
+    }
+
+    #[test]
+    fn config_tracks_recent_extra_colors() {
+        let visible = COLOR_PALETTE[0].color;
+        let hidden = Color {
+            r: 51,
+            g: 102,
+            b: 153,
+        };
+        let mut config = AppConfig::default();
+
+        config.set_recent_extra_colors(&[visible, hidden]);
+
+        assert_eq!(config.recent_colors, vec![hidden.to_hex()]);
+        assert_eq!(config.recent_extra_colors(), vec![hidden]);
+    }
+
+    #[test]
+    fn remembering_path_directory_updates_config() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("scene.tanim.toml");
+        let mut app = AppState::welcome("");
+
+        app.remember_path_directory(&path);
+
+        assert_eq!(
+            app.config.last_directory_path().as_deref(),
+            Some(dir.path())
+        );
     }
 
     #[test]
