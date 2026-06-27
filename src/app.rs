@@ -38,6 +38,7 @@ const EXPANDED_TONE_COUNT: usize = 24;
 const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT;
 const MAX_RECENT_COLORS: usize = 24;
 const MAX_STAMPS: usize = 12;
+const PROJECT_FILE_SUFFIX: &str = ".tanim.toml";
 const ATTR_CHOICES: &[TextAttr] = &[
     TextAttr::Bold,
     TextAttr::Dim,
@@ -732,6 +733,7 @@ struct FileBrowser {
     filename: String,
     entries: Vec<FileEntry>,
     scroll: usize,
+    show_hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -773,6 +775,8 @@ enum FileEntryKind {
 enum FileBrowserAction {
     Parent,
     Entry(usize),
+    ToggleHidden,
+    ClearName,
     Confirm,
     Cancel,
 }
@@ -1902,6 +1906,12 @@ impl AppState {
             }
             KeyCode::PageDown | KeyCode::Down => self.scroll_file_browser(1),
             KeyCode::PageUp | KeyCode::Up => self.scroll_file_browser(-1),
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+                    browser.filename.clear();
+                    self.message = "Name cleared".to_string();
+                }
+            }
             KeyCode::Backspace => {
                 if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
                     browser.filename.pop();
@@ -3269,6 +3279,21 @@ impl AppState {
         }
 
         let path = file_browser_target_path(&browser);
+        if path.is_dir() {
+            self.modal = Some(Modal::FileBrowser(file_browser_for_with_hidden(
+                browser.mode,
+                path,
+                String::new(),
+                browser.show_hidden,
+            )));
+            self.hovered_file_action = None;
+            self.message = match browser.mode {
+                FileBrowserMode::Open => "Choose a .tanim.toml file".to_string(),
+                FileBrowserMode::SaveAs => "Choose save location".to_string(),
+            };
+            return;
+        }
+
         match browser.mode {
             FileBrowserMode::Open => self.commit_open_path(path, None),
             FileBrowserMode::SaveAs => self.commit_save_as_path(path, None),
@@ -3282,7 +3307,7 @@ impl AppState {
 
         let cwd = usable_directory(directory);
         browser.cwd = cwd;
-        browser.entries = read_file_browser_entries(&browser.cwd);
+        browser.entries = read_file_browser_entries(&browser.cwd, browser.show_hidden);
         browser.scroll = 0;
         if browser.mode == FileBrowserMode::Open {
             browser.filename.clear();
@@ -3308,12 +3333,27 @@ impl AppState {
                 }
                 FileBrowserMode::SaveAs => {
                     if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
-                        browser.filename = entry.name;
+                        browser.filename = editable_save_name(&entry.name);
                     }
                     self.message = "Selected save name".to_string();
                 }
             },
         }
+    }
+
+    fn toggle_file_browser_hidden(&mut self) {
+        let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() else {
+            return;
+        };
+        browser.show_hidden = !browser.show_hidden;
+        browser.entries = read_file_browser_entries(&browser.cwd, browser.show_hidden);
+        browser.scroll = 0;
+        self.hovered_file_action = None;
+        self.message = if browser.show_hidden {
+            "Showing hidden entries".to_string()
+        } else {
+            "Hiding hidden entries".to_string()
+        };
     }
 
     fn run_file_browser_action(&mut self, action: FileBrowserAction) {
@@ -3328,6 +3368,13 @@ impl AppState {
                 }
             }
             FileBrowserAction::Entry(index) => self.handle_file_browser_entry(index),
+            FileBrowserAction::ToggleHidden => self.toggle_file_browser_hidden(),
+            FileBrowserAction::ClearName => {
+                if let Some(Modal::FileBrowser(browser)) = self.modal.as_mut() {
+                    browser.filename.clear();
+                    self.message = "Name cleared".to_string();
+                }
+            }
             FileBrowserAction::Confirm => {
                 if let Some(Modal::FileBrowser(browser)) = self.modal.take() {
                     self.confirm_file_browser(browser);
@@ -3533,8 +3580,8 @@ impl AppState {
             .file_path
             .as_ref()
             .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "untitled.tanim.toml".to_string());
+            .map(|name| editable_save_name(&name.to_string_lossy()))
+            .unwrap_or_else(|| "untitled".to_string());
         self.modal = Some(Modal::FileBrowser(file_browser_for(
             FileBrowserMode::SaveAs,
             cwd,
@@ -5457,7 +5504,7 @@ fn draw_file_browser(frame: &mut Frame<'_>, app: &mut AppState, browser: FileBro
         inner.x,
         inner.y.saturating_add(1),
         inner.width,
-        "Click folders/files. Type a name below. Wheel/PageUp/PageDown scroll.",
+        file_browser_hint(&browser),
         TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
     );
 
@@ -5470,11 +5517,37 @@ fn draw_file_browser(frame: &mut Frame<'_>, app: &mut AppState, browser: FileBro
         inner.x,
         name_y,
         inner.width,
-        &format!("Name: {}", browser.filename),
+        &file_browser_name_line(&browser),
         TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
     );
 
-    draw_file_browser_buttons(frame, app, area, browser.mode);
+    draw_file_browser_buttons(frame, app, area, browser.mode, browser.show_hidden);
+}
+
+fn file_browser_hint(browser: &FileBrowser) -> &'static str {
+    match browser.mode {
+        FileBrowserMode::Open => {
+            "Click folders/files. Type a file name. Wheel/PageUp/PageDown scroll."
+        }
+        FileBrowserMode::SaveAs => {
+            "Click folders/files. Type a base name. .tanim.toml is added automatically."
+        }
+    }
+}
+
+fn file_browser_name_line(browser: &FileBrowser) -> String {
+    match browser.mode {
+        FileBrowserMode::Open => format!("Name: {}", browser.filename),
+        FileBrowserMode::SaveAs if browser.filename.trim().is_empty() => {
+            format!("Name: <name>{PROJECT_FILE_SUFFIX}")
+        }
+        FileBrowserMode::SaveAs if browser.filename.ends_with(PROJECT_FILE_SUFFIX) => {
+            format!("Name: {}", browser.filename)
+        }
+        FileBrowserMode::SaveAs => {
+            format!("Name: {}{}", browser.filename, PROJECT_FILE_SUFFIX)
+        }
+    }
 }
 
 fn draw_file_browser_rows(
@@ -5560,16 +5633,28 @@ fn draw_file_browser_buttons(
     app: &mut AppState,
     modal_area: Rect,
     mode: FileBrowserMode,
+    show_hidden: bool,
 ) {
-    let buttons = [
-        (FileBrowserAction::Confirm, mode.confirm_label()),
-        (FileBrowserAction::Cancel, "Cancel"),
-    ];
+    let mut buttons = vec![(
+        FileBrowserAction::ToggleHidden,
+        if show_hidden {
+            "Hide Hidden"
+        } else {
+            "Show Hidden"
+        },
+    )];
+    if mode == FileBrowserMode::SaveAs {
+        buttons.push((FileBrowserAction::ClearName, "Clear"));
+    }
+    buttons.push((FileBrowserAction::Confirm, mode.confirm_label()));
+    buttons.push((FileBrowserAction::Cancel, "Cancel"));
+
+    let gap_count = u16::try_from(buttons.len().saturating_sub(1)).unwrap_or(0);
     let total_width: u16 = buttons
         .iter()
         .map(|(_, label)| u16::try_from(label.chars().count()).unwrap_or(0) + 4)
         .sum::<u16>()
-        .saturating_add(1);
+        .saturating_add(gap_count);
     let mut x = modal_area.x + modal_area.width.saturating_sub(total_width) / 2;
     let y = modal_area.y + modal_area.height.saturating_sub(2);
 
@@ -5870,14 +5955,24 @@ fn unique_style_id(project: &Project, base: &str) -> String {
 }
 
 fn file_browser_for(mode: FileBrowserMode, cwd: PathBuf, filename: String) -> FileBrowser {
+    file_browser_for_with_hidden(mode, cwd, filename, false)
+}
+
+fn file_browser_for_with_hidden(
+    mode: FileBrowserMode,
+    cwd: PathBuf,
+    filename: String,
+    show_hidden: bool,
+) -> FileBrowser {
     let cwd = usable_directory(cwd);
-    let entries = read_file_browser_entries(&cwd);
+    let entries = read_file_browser_entries(&cwd, show_hidden);
     FileBrowser {
         mode,
         cwd,
         filename,
         entries,
         scroll: 0,
+        show_hidden,
     }
 }
 
@@ -5891,12 +5986,12 @@ fn usable_directory(path: PathBuf) -> PathBuf {
     }
 }
 
-fn read_file_browser_entries(cwd: &Path) -> Vec<FileEntry> {
+fn read_file_browser_entries(cwd: &Path, show_hidden: bool) -> Vec<FileEntry> {
     let mut entries = fs::read_dir(cwd)
         .ok()
         .into_iter()
         .flat_map(|read_dir| read_dir.filter_map(Result::ok))
-        .filter_map(|entry| file_browser_entry(entry.path()))
+        .filter_map(|entry| file_browser_entry(entry.path(), show_hidden))
         .collect::<Vec<_>>();
 
     entries.sort_by(|a, b| {
@@ -5911,9 +6006,12 @@ fn read_file_browser_entries(cwd: &Path) -> Vec<FileEntry> {
     entries
 }
 
-fn file_browser_entry(path: PathBuf) -> Option<FileEntry> {
+fn file_browser_entry(path: PathBuf, show_hidden: bool) -> Option<FileEntry> {
     let metadata = fs::metadata(&path).ok()?;
     let name = path.file_name()?.to_string_lossy().to_string();
+    if !show_hidden && name.starts_with('.') {
+        return None;
+    }
 
     if metadata.is_dir() {
         Some(FileEntry {
@@ -5935,17 +6033,42 @@ fn file_browser_entry(path: PathBuf) -> Option<FileEntry> {
 fn is_project_file_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".tanim.toml"))
+        .is_some_and(|name| name.ends_with(PROJECT_FILE_SUFFIX))
 }
 
 fn file_browser_target_path(browser: &FileBrowser) -> PathBuf {
     let input = browser.filename.trim();
-    let path = PathBuf::from(input);
-    if path.is_absolute() {
-        path
+    let input_path = PathBuf::from(input);
+    let path = if input_path.is_absolute() {
+        input_path
     } else {
-        browser.cwd.join(path)
+        browser.cwd.join(input_path)
+    };
+
+    if browser.mode == FileBrowserMode::SaveAs && !path.is_dir() {
+        path_with_project_suffix(path)
+    } else {
+        path
     }
+}
+
+fn editable_save_name(file_name: &str) -> String {
+    file_name
+        .strip_suffix(PROJECT_FILE_SUFFIX)
+        .unwrap_or(file_name)
+        .to_string()
+}
+
+fn path_with_project_suffix(path: PathBuf) -> PathBuf {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path;
+    };
+
+    if file_name.ends_with(PROJECT_FILE_SUFFIX) {
+        return path;
+    }
+
+    path.with_file_name(format!("{file_name}{PROJECT_FILE_SUFFIX}"))
 }
 
 fn format_save_error(error: FormatError) -> String {
@@ -6912,16 +7035,54 @@ mod tests {
     fn file_browser_lists_project_files_and_directories() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::create_dir(dir.path().join("folder")).expect("create folder");
+        fs::create_dir(dir.path().join(".config")).expect("create hidden folder");
         fs::write(dir.path().join("scene.tanim.toml"), "").expect("write project file");
+        fs::write(dir.path().join(".hidden.tanim.toml"), "").expect("write hidden project file");
         fs::write(dir.path().join("notes.txt"), "").expect("write ignored file");
 
-        let entries = read_file_browser_entries(dir.path());
+        let entries = read_file_browser_entries(dir.path(), false);
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "folder");
         assert_eq!(entries[0].kind, FileEntryKind::Directory);
         assert_eq!(entries[1].name, "scene.tanim.toml");
         assert_eq!(entries[1].kind, FileEntryKind::File);
+    }
+
+    #[test]
+    fn file_browser_can_show_hidden_entries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(dir.path().join(".config")).expect("create hidden folder");
+        fs::write(dir.path().join(".hidden.tanim.toml"), "").expect("write hidden project file");
+
+        let entries = read_file_browser_entries(dir.path(), true);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, ".config");
+        assert_eq!(entries[0].kind, FileEntryKind::Directory);
+        assert_eq!(entries[1].name, ".hidden.tanim.toml");
+        assert_eq!(entries[1].kind, FileEntryKind::File);
+    }
+
+    #[test]
+    fn file_browser_toggle_hidden_refreshes_entries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(dir.path().join(".config")).expect("create hidden folder");
+        let mut app = AppState::welcome("");
+        app.modal = Some(Modal::FileBrowser(file_browser_for(
+            FileBrowserMode::Open,
+            dir.path().to_path_buf(),
+            String::new(),
+        )));
+
+        app.run_file_browser_action(FileBrowserAction::ToggleHidden);
+
+        let Some(Modal::FileBrowser(browser)) = app.modal else {
+            panic!("expected file browser");
+        };
+        assert!(browser.show_hidden);
+        assert_eq!(browser.entries.len(), 1);
+        assert_eq!(browser.entries[0].name, ".config");
     }
 
     #[test]
@@ -6942,7 +7103,41 @@ mod tests {
         };
         assert_eq!(browser.mode, FileBrowserMode::SaveAs);
         assert_eq!(browser.cwd, dir.path());
-        assert_eq!(browser.filename, "scene.tanim.toml");
+        assert_eq!(browser.filename, "scene");
+    }
+
+    #[test]
+    fn save_as_browser_adds_project_suffix_to_target_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let browser = file_browser_for(
+            FileBrowserMode::SaveAs,
+            dir.path().to_path_buf(),
+            "renamed".to_string(),
+        );
+
+        assert_eq!(
+            file_browser_target_path(&browser),
+            dir.path().join("renamed.tanim.toml")
+        );
+    }
+
+    #[test]
+    fn save_as_clear_name_action_empties_filename() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut app = AppState::welcome("");
+        app.modal = Some(Modal::FileBrowser(file_browser_for(
+            FileBrowserMode::SaveAs,
+            dir.path().to_path_buf(),
+            "scene".to_string(),
+        )));
+
+        app.run_file_browser_action(FileBrowserAction::ClearName);
+
+        let Some(Modal::FileBrowser(browser)) = app.modal else {
+            panic!("expected file browser");
+        };
+        assert!(browser.filename.is_empty());
+        assert_eq!(app.message, "Name cleared");
     }
 
     #[test]
