@@ -54,3 +54,7 @@ The file-format details above are intentional integration points. Do not change
 coordinate semantics, sparse transparency behavior, frame timing, style
 resolution, normalized layout metadata, frame count rules, resource limits, or
 composition order without a schema migration.
+
+## License
+
+Terminal Animator is licensed under Apache-2.0. See [LICENSE](../LICENSE).
