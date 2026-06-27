@@ -2,7 +2,9 @@
 name = "terminal_animator"
 version = "0.1.0"
 edition = "2024"
+description = "Mouse-first terminal art editor"
 license = "Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"

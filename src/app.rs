@@ -4955,9 +4955,8 @@ fn draw_canvas(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let help = "Space play/pause | W duration | X delete frame | V select | Ctrl-C/X copy/cut";
     let lines = vec![
-        Line::from(help),
+        Line::from(footer_help(app)),
         Line::from(app.message.as_str()),
         Line::from(canvas_status(app)),
     ];
@@ -4967,6 +4966,14 @@ fn draw_footer(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn footer_help(app: &AppState) -> &'static str {
+    if app.is_animation_mode() {
+        "Space play/pause | Left/Right frames | W duration | X delete frame | V select"
+    } else {
+        "Ctrl-S save | Ctrl-Z/Y undo/redo | V select | Ctrl-C/X copy/cut"
+    }
 }
 
 fn canvas_status(app: &AppState) -> String {
@@ -5512,14 +5519,7 @@ fn draw_file_browser(frame: &mut Frame<'_>, app: &mut AppState, browser: FileBro
     draw_file_browser_rows(frame, app, &browser, list_area);
 
     let name_y = inner.y + inner.height.saturating_sub(3);
-    draw_text(
-        frame,
-        inner.x,
-        name_y,
-        inner.width,
-        &file_browser_name_line(&browser),
-        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
-    );
+    draw_file_browser_name(frame, inner.x, name_y, inner.width, &browser);
 
     draw_file_browser_buttons(frame, app, area, browser.mode, browser.show_hidden);
 }
@@ -5535,18 +5535,79 @@ fn file_browser_hint(browser: &FileBrowser) -> &'static str {
     }
 }
 
-fn file_browser_name_line(browser: &FileBrowser) -> String {
+fn draw_file_browser_name(
+    frame: &mut Frame<'_>,
+    x: u16,
+    y: u16,
+    width: u16,
+    browser: &FileBrowser,
+) {
+    if width == 0 {
+        return;
+    }
+
+    let label_style = TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194));
+    let editable_style = TuiStyle::default()
+        .fg(TuiColor::Rgb(235, 242, 248))
+        .add_modifier(Modifier::UNDERLINED);
+    let extension_style = TuiStyle::default().fg(TuiColor::Rgb(103, 116, 128));
+    let mut cursor = x;
+    let limit = x.saturating_add(width);
+
+    draw_text_part(frame, &mut cursor, y, limit, "Name: ", label_style);
+
     match browser.mode {
-        FileBrowserMode::Open => format!("Name: {}", browser.filename),
-        FileBrowserMode::SaveAs if browser.filename.trim().is_empty() => {
-            format!("Name: <name>{PROJECT_FILE_SUFFIX}")
-        }
-        FileBrowserMode::SaveAs if browser.filename.ends_with(PROJECT_FILE_SUFFIX) => {
-            format!("Name: {}", browser.filename)
+        FileBrowserMode::Open => {
+            draw_text_part(
+                frame,
+                &mut cursor,
+                y,
+                limit,
+                &browser.filename,
+                editable_style,
+            );
         }
         FileBrowserMode::SaveAs => {
-            format!("Name: {}{}", browser.filename, PROJECT_FILE_SUFFIX)
+            let editable = file_browser_save_display_name(&browser.filename);
+            draw_text_part(frame, &mut cursor, y, limit, &editable, editable_style);
+            draw_text_part(
+                frame,
+                &mut cursor,
+                y,
+                limit,
+                PROJECT_FILE_SUFFIX,
+                extension_style,
+            );
         }
+    }
+}
+
+fn draw_text_part(
+    frame: &mut Frame<'_>,
+    cursor: &mut u16,
+    y: u16,
+    limit: u16,
+    text: &str,
+    style: TuiStyle,
+) {
+    if *cursor >= limit {
+        return;
+    }
+
+    let width = limit.saturating_sub(*cursor);
+    draw_text(frame, *cursor, y, width, text, style);
+    let drawn_width = u16::try_from(text.chars().count())
+        .unwrap_or(u16::MAX)
+        .min(width);
+    *cursor = (*cursor).saturating_add(drawn_width);
+}
+
+fn file_browser_save_display_name(filename: &str) -> String {
+    let editable = editable_save_name(filename);
+    if editable.trim().is_empty() {
+        "<name>".to_string()
+    } else {
+        editable
     }
 }
 
@@ -6893,11 +6954,15 @@ mod tests {
         let mut app = AppState::editor(Project::new_image("image", 4, 2), None, false, "");
 
         let status = top_bar_status(&app, "art", "");
+        let help = footer_help(&app);
 
         assert!(status.contains("image"));
         assert!(!status.contains("frame"));
         assert!(!status.contains("onion"));
         assert!(!status.contains("paused"));
+        assert!(!help.contains("play/pause"));
+        assert!(!help.contains("duration"));
+        assert!(!help.contains("delete frame"));
         assert!(!app.top_action_available(TopAction::NextFrame));
         assert!(!app.top_action_available(TopAction::TogglePlayback));
         assert!(app.top_action_available(TopAction::Save));
@@ -6921,6 +6986,7 @@ mod tests {
         assert!(status.contains("frame 1/1"));
         assert!(status.contains("onion off"));
         assert!(status.contains("paused"));
+        assert!(footer_help(&app).contains("play/pause"));
         assert!(app.top_action_available(TopAction::NextFrame));
         assert!(app.top_action_available(TopAction::TogglePlayback));
     }
@@ -7119,6 +7185,13 @@ mod tests {
             file_browser_target_path(&browser),
             dir.path().join("renamed.tanim.toml")
         );
+    }
+
+    #[test]
+    fn save_as_display_name_keeps_extension_out_of_editable_part() {
+        assert_eq!(file_browser_save_display_name("scene.tanim.toml"), "scene");
+        assert_eq!(file_browser_save_display_name("scene"), "scene");
+        assert_eq!(file_browser_save_display_name(""), "<name>");
     }
 
     #[test]
