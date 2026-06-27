@@ -2,9 +2,9 @@
 
 Terminal Animator is a little editor for drawing terminal art by hand.
 
-You pick a character, pick some colors, and paint on a grid. You can make still
-images, simple frame animations, and export the result when you want to use it
-somewhere else.
+It's not that hard to grasp, basically paint in the terminal. But ascii art.
+Kind of. It's easier to click characters into position with a mouse than to type
+them out by hand. So you use a mouse in a terminal and it's all good.
 
 The main file format is `.tanim.toml`. Plain text and ANSI are export formats
 for sharing or previewing.
@@ -50,6 +50,12 @@ Useful keyboard shortcuts:
 - Mouse wheel or PageUp/PageDown: scroll bigger pickers and file lists.
 
 Save As lets you type just the name. The app adds `.tanim.toml` for you.
+
+## State of the Project
+
+Image editing is the main focus, and works fairly well. Don't get too
+excited here. I built this to help with a different project. I'm only going
+to keep improving it for as long as I need it.
 
 ## More Detail
 
