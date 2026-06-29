@@ -31,8 +31,10 @@ const DEFAULT_NEW_HEIGHT: u16 = 16;
 const COLOR_SLOT_WIDTH: u16 = 4;
 const COLOR_SWATCH_WIDTH: u16 = 2;
 const CHAR_SLOT_WIDTH: u16 = 3;
+const SYMBOL_SLOT_WIDTH: u16 = 3;
 const TOP_BUTTON_GAP: u16 = 1;
 const EXPANDED_COLOR_COLUMNS: u16 = 12;
+const EXPANDED_SYMBOL_COLUMNS: u16 = 10;
 const EXPANDED_HUE_COUNT: usize = 12;
 const EXPANDED_TONE_COUNT: usize = 24;
 const MORE_COLOR_COUNT: usize = EXPANDED_HUE_COUNT * EXPANDED_TONE_COUNT;
@@ -271,9 +273,22 @@ const COLOR_PALETTE: &[PaletteColor] = &[
 
 const CHARACTER_PALETTE: &[char] = &[
     '#', ' ', '*', '+', '-', '/', '\\', '|', '_', '.', '\'', '"', '`', '~', '^', 'o', 'O', '█',
-    '▓', '▒', '░', '▀', '▄', '▌', '▐', '■', '□', '▪', '▫', '─', '│', '┌', '┐', '└', '┘', '├', '┤',
-    '┬', '┴', '┼', '╭', '╮', '╰', '╯', '•', '◆', '◇', '▲', '▼', '◀', '▶', '★', '☆', '✦', '✧', '✶',
-    '✷', '✹', '✺',
+    '▓', '▒', '░', '▀', '▄', '▌', '▐', '▖', '▗', '▘', '▝', '■', '□', '▪', '▫', '─', '│', '┌', '┐',
+    '└', '┘', '├', '┤', '┬', '┴', '┼', '╭', '╮', '╰', '╯', '•', '◆', '◇', '▲', '▼', '◀', '▶', '◢',
+    '◣', '◤', '◥', '★', '☆', '✦', '✧', '✶', '✷', '✹', '✺',
+];
+
+const MORE_CHARACTER_PALETTE: &[char] = &[
+    '#', ' ', '*', '+', '-', '/', '\\', '|', '_', '.', ',', ':', ';', '\'', '"', '`', '~', '^',
+    '!', '?', '(', ')', '[', ']', '{', '}', '<', '>', '=', '@', '&', '%', '$', 'o', 'O', '0', '1',
+    '2', '3', '4', '5', '6', '7', '8', '9', '█', '▓', '▒', '░', '▀', '▄', '▌', '▐', '▖', '▗', '▘',
+    '▙', '▚', '▛', '▜', '▝', '▞', '▟', '■', '□', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '◆', '◇',
+    '◈', '◉', '○', '●', '◌', '◎', '◍', '◐', '◑', '◒', '◓', '◔', '◕', '▲', '△', '▼', '▽', '◀', '◁',
+    '▶', '▷', '◢', '◣', '◤', '◥', '◸', '◹', '◺', '◿', '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬',
+    '┴', '┼', '╭', '╮', '╰', '╯', '═', '║', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬', '╒', '╕',
+    '╘', '╛', '╓', '╖', '╙', '╜', '←', '↑', '→', '↓', '↔', '↕', '↖', '↗', '↘', '↙', '⇐', '⇒', '⇑',
+    '⇓', '⇔', '•', '◦', '·', '★', '☆', '✦', '✧', '✶', '✷', '✹', '✺', '✚', '✕', '✖', '✓', '✔', '×',
+    '÷', '±', '≈', '≠', '≤', '≥', '♠', '♡', '♢', '♣', '♥', '♦', '♧', '♤', '♪', '♫',
 ];
 
 pub fn run_interactive(initial: Startup) -> Result<()> {
@@ -681,6 +696,7 @@ enum Modal {
         input: String,
     },
     ColorPicker,
+    SymbolPicker,
     ExportMenu,
     ToolMenu,
     QuitConfirm,
@@ -898,17 +914,20 @@ struct AppState {
     attr_button_areas: Vec<ButtonHit<TextAttr>>,
     selection_action_areas: Vec<ButtonHit<SelectionAction>>,
     more_colors_button_area: Rect,
+    more_symbols_button_area: Rect,
     rgb_button_area: Rect,
     welcome_action_areas: Vec<ButtonHit<WelcomeAction>>,
     top_action_areas: Vec<ButtonHit<TopAction>>,
     modal_tool_areas: Vec<ButtonHit<Tool>>,
     modal_action_areas: Vec<ButtonHit<ModalAction>>,
     modal_color_areas: Vec<ButtonHit<usize>>,
+    modal_symbol_areas: Vec<ButtonHit<usize>>,
     modal_rgb_areas: Vec<ButtonHit<RgbControl>>,
     modal_file_areas: Vec<ButtonHit<FileBrowserAction>>,
     modal_area: Rect,
     recent_extra_colors: Vec<Color>,
     color_picker_scroll_row: usize,
+    symbol_picker_scroll_row: usize,
     color_target: ColorTarget,
     hovered_palette: Option<PaletteHover>,
     hovered_recent_color: Option<usize>,
@@ -920,10 +939,12 @@ struct AppState {
     hovered_tool_button: bool,
     hovered_brush_button: bool,
     hovered_more_colors_button: bool,
+    hovered_more_symbols_button: bool,
     hovered_rgb_button: bool,
     hovered_modal_tool: Option<Tool>,
     hovered_modal_action: Option<ModalAction>,
     hovered_modal_color: Option<usize>,
+    hovered_modal_symbol: Option<usize>,
     hovered_rgb_control: Option<RgbControl>,
     hovered_file_action: Option<FileBrowserAction>,
     dragging_rgb_channel: Option<RgbChannel>,
@@ -1012,17 +1033,20 @@ impl AppState {
             attr_button_areas: Vec::new(),
             selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
+            more_symbols_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
             top_action_areas: Vec::new(),
             modal_tool_areas: Vec::new(),
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
+            modal_symbol_areas: Vec::new(),
             modal_rgb_areas: Vec::new(),
             modal_file_areas: Vec::new(),
             modal_area: Rect::default(),
             recent_extra_colors,
             color_picker_scroll_row: 0,
+            symbol_picker_scroll_row: 0,
             color_target: ColorTarget::Foreground,
             hovered_palette: None,
             hovered_recent_color: None,
@@ -1034,10 +1058,12 @@ impl AppState {
             hovered_tool_button: false,
             hovered_brush_button: false,
             hovered_more_colors_button: false,
+            hovered_more_symbols_button: false,
             hovered_rgb_button: false,
             hovered_modal_tool: None,
             hovered_modal_action: None,
             hovered_modal_color: None,
+            hovered_modal_symbol: None,
             hovered_rgb_control: None,
             hovered_file_action: None,
             dragging_rgb_channel: None,
@@ -1088,17 +1114,20 @@ impl AppState {
             attr_button_areas: Vec::new(),
             selection_action_areas: Vec::new(),
             more_colors_button_area: Rect::default(),
+            more_symbols_button_area: Rect::default(),
             rgb_button_area: Rect::default(),
             welcome_action_areas: Vec::new(),
             top_action_areas: Vec::new(),
             modal_tool_areas: Vec::new(),
             modal_action_areas: Vec::new(),
             modal_color_areas: Vec::new(),
+            modal_symbol_areas: Vec::new(),
             modal_rgb_areas: Vec::new(),
             modal_file_areas: Vec::new(),
             modal_area: Rect::default(),
             recent_extra_colors,
             color_picker_scroll_row: 0,
+            symbol_picker_scroll_row: 0,
             color_target: ColorTarget::Foreground,
             hovered_palette: None,
             hovered_recent_color: None,
@@ -1110,10 +1139,12 @@ impl AppState {
             hovered_tool_button: false,
             hovered_brush_button: false,
             hovered_more_colors_button: false,
+            hovered_more_symbols_button: false,
             hovered_rgb_button: false,
             hovered_modal_tool: None,
             hovered_modal_action: None,
             hovered_modal_color: None,
+            hovered_modal_symbol: None,
             hovered_rgb_control: None,
             hovered_file_action: None,
             dragging_rgb_channel: None,
@@ -1329,6 +1360,9 @@ impl AppState {
                     input: self.brush_char.to_string(),
                 });
             }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.open_symbol_picker();
+            }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.modal = Some(Modal::NewStyle {
                     input: next_style_id(&self.project),
@@ -1372,6 +1406,18 @@ impl AppState {
                 KeyCode::PageDown | KeyCode::Down => self.scroll_color_picker(1),
                 KeyCode::PageUp | KeyCode::Up => self.scroll_color_picker(-1),
                 KeyCode::Char('u') | KeyCode::Char('U') => self.open_rgb_input(),
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(self.modal, Some(Modal::SymbolPicker)) {
+            match key.code {
+                KeyCode::Esc => {
+                    self.close_modal("Symbol picker closed");
+                }
+                KeyCode::PageDown | KeyCode::Down => self.scroll_symbol_picker(1),
+                KeyCode::PageUp | KeyCode::Up => self.scroll_symbol_picker(-1),
                 _ => {}
             }
             return;
@@ -1549,8 +1595,7 @@ impl AppState {
                 let mut chars = input.chars();
                 match (chars.next(), chars.next()) {
                     (Some(ch), None) if is_valid_v1_character(ch) => {
-                        self.brush_char = ch;
-                        self.message = format!("Brush character set to {ch:?}");
+                        self.select_brush_char(ch);
                     }
                     _ => {
                         self.message = "Brush character must be one valid V1 character".to_string();
@@ -1684,6 +1729,7 @@ impl AppState {
                 }
             }
             Modal::ColorPicker => {}
+            Modal::SymbolPicker => {}
             Modal::FileBrowser(_) => {}
             Modal::ExportMenu => {}
             Modal::ToolMenu => {}
@@ -1732,6 +1778,10 @@ impl AppState {
                 }
                 if rect_contains(self.more_colors_button_area, mouse.column, mouse.row) {
                     self.open_color_picker();
+                    return;
+                }
+                if rect_contains(self.more_symbols_button_area, mouse.column, mouse.row) {
+                    self.open_symbol_picker();
                     return;
                 }
                 if rect_contains(self.rgb_button_area, mouse.column, mouse.row) {
@@ -1818,6 +1868,28 @@ impl AppState {
                         self.run_modal_action(action);
                     } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
                         self.close_modal("Color picker closed");
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(self.modal, Some(Modal::SymbolPicker)) {
+            self.hovered_modal_symbol = self.modal_symbol_at(mouse.column, mouse.row);
+            self.hovered_modal_action = self.modal_action_at(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.scroll_symbol_picker(1),
+                MouseEventKind::ScrollUp => self.scroll_symbol_picker(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) = self.hovered_modal_symbol {
+                        let ch = MORE_CHARACTER_PALETTE[index];
+                        self.select_brush_char(ch);
+                        self.close_modal(format!("Brush character set to {:?}", ch));
+                    } else if let Some(action) = self.modal_action_at(mouse.column, mouse.row) {
+                        self.run_modal_action(action);
+                    } else if !rect_contains(self.modal_area, mouse.column, mouse.row) {
+                        self.close_modal("Symbol picker closed");
                     }
                 }
                 _ => {}
@@ -1948,6 +2020,8 @@ impl AppState {
         self.hovered_tool_button = rect_contains(self.tool_button_area, column, row);
         self.hovered_brush_button = rect_contains(self.brush_button_area, column, row);
         self.hovered_more_colors_button = rect_contains(self.more_colors_button_area, column, row);
+        self.hovered_more_symbols_button =
+            rect_contains(self.more_symbols_button_area, column, row);
         self.hovered_rgb_button = rect_contains(self.rgb_button_area, column, row);
         self.hovered_color_control = self.color_control_at(column, row);
         self.hovered_attr = self.attr_action_at(column, row);
@@ -1956,6 +2030,7 @@ impl AppState {
             && !self.hovered_tool_button
             && !self.hovered_brush_button
             && !self.hovered_more_colors_button
+            && !self.hovered_more_symbols_button
             && !self.hovered_rgb_button
             && self.hovered_color_control.is_none()
             && self.hovered_attr.is_none()
@@ -2025,6 +2100,13 @@ impl AppState {
 
     fn modal_color_at(&self, column: u16, row: u16) -> Option<usize> {
         self.modal_color_areas
+            .iter()
+            .find(|hit| rect_contains(hit.area, column, row))
+            .map(|hit| hit.action)
+    }
+
+    fn modal_symbol_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.modal_symbol_areas
             .iter()
             .find(|hit| rect_contains(hit.area, column, row))
             .map(|hit| hit.action)
@@ -2171,13 +2253,17 @@ impl AppState {
             row,
             CHARACTER_PALETTE.len(),
         ) {
-            self.brush_char = CHARACTER_PALETTE[index];
-            self.tool = Tool::Pencil;
-            self.message = format!("Brush character set to {:?}", self.brush_char);
+            self.select_brush_char(CHARACTER_PALETTE[index]);
             return true;
         }
 
         false
+    }
+
+    fn select_brush_char(&mut self, ch: char) {
+        self.brush_char = ch;
+        self.tool = Tool::Pencil;
+        self.message = format!("Brush character set to {:?}", self.brush_char);
     }
 
     fn run_selection_action(&mut self, action: SelectionAction) {
@@ -3412,6 +3498,7 @@ impl AppState {
         self.hovered_modal_action = None;
         self.hovered_modal_tool = None;
         self.hovered_modal_color = None;
+        self.hovered_modal_symbol = None;
         self.hovered_rgb_control = None;
         self.hovered_file_action = None;
         self.dragging_rgb_channel = None;
@@ -3423,6 +3510,13 @@ impl AppState {
         self.color_picker_scroll_row = 0;
         self.hovered_modal_color = None;
         self.message = "Choose a color".to_string();
+    }
+
+    fn open_symbol_picker(&mut self) {
+        self.modal = Some(Modal::SymbolPicker);
+        self.symbol_picker_scroll_row = 0;
+        self.hovered_modal_symbol = None;
+        self.message = "Choose a symbol".to_string();
     }
 
     fn open_rgb_input(&mut self) {
@@ -3450,6 +3544,20 @@ impl AppState {
         };
     }
 
+    fn scroll_symbol_picker(&mut self, delta_rows: isize) {
+        let columns = self.symbol_picker_columns().max(1);
+        let visible_rows = self.symbol_picker_visible_rows().max(1);
+        let total_rows = MORE_CHARACTER_PALETTE.len().div_ceil(usize::from(columns));
+        let max_scroll = total_rows.saturating_sub(usize::from(visible_rows));
+        let current = self.symbol_picker_scroll_row;
+
+        self.symbol_picker_scroll_row = if delta_rows.is_negative() {
+            current.saturating_sub(delta_rows.unsigned_abs())
+        } else {
+            current.saturating_add(delta_rows as usize).min(max_scroll)
+        };
+    }
+
     fn color_picker_columns(&self) -> u16 {
         palette_columns(self.color_picker_grid_area().width, COLOR_SLOT_WIDTH)
             .clamp(1, EXPANDED_COLOR_COLUMNS)
@@ -3469,6 +3577,37 @@ impl AppState {
             .width
             .saturating_sub(4)
             .min(EXPANDED_COLOR_COLUMNS.saturating_mul(COLOR_SLOT_WIDTH));
+
+        Rect {
+            x: self
+                .modal_area
+                .x
+                .saturating_add(self.modal_area.width.saturating_sub(width) / 2),
+            y: self.modal_area.y + 3,
+            width,
+            height: self.modal_area.height.saturating_sub(6),
+        }
+    }
+
+    fn symbol_picker_columns(&self) -> u16 {
+        palette_columns(self.symbol_picker_grid_area().width, SYMBOL_SLOT_WIDTH)
+            .clamp(1, EXPANDED_SYMBOL_COLUMNS)
+    }
+
+    fn symbol_picker_visible_rows(&self) -> u16 {
+        self.symbol_picker_grid_area().height
+    }
+
+    fn symbol_picker_grid_area(&self) -> Rect {
+        if self.modal_area.width < 4 || self.modal_area.height < 7 {
+            return Rect::default();
+        }
+
+        let width = self
+            .modal_area
+            .width
+            .saturating_sub(4)
+            .min(EXPANDED_SYMBOL_COLUMNS.saturating_mul(SYMBOL_SLOT_WIDTH));
 
         Rect {
             x: self
@@ -3840,6 +3979,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     app.attr_button_areas.clear();
     app.selection_action_areas.clear();
     app.more_colors_button_area = Rect::default();
+    app.more_symbols_button_area = Rect::default();
     app.rgb_button_area = Rect::default();
 
     let mut y = inner.y;
@@ -4021,6 +4161,16 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
     }
 
     draw_sidebar_spacer(&mut y, max_y);
+    app.more_symbols_button_area = draw_sidebar_control_line(
+        frame,
+        inner,
+        &mut y,
+        max_y,
+        "More symbols...".to_string(),
+        app.hovered_more_symbols_button,
+    );
+
+    draw_sidebar_spacer(&mut y, max_y);
     draw_sidebar_line(
         frame,
         inner,
@@ -4034,7 +4184,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         inner,
         &mut y,
         max_y,
-        "M more | U RGB | F/G edit".to_string(),
+        "M colors | Y symbols | U RGB".to_string(),
         normal,
     );
 }
@@ -4380,18 +4530,39 @@ fn draw_character_palette(
     selected_char: char,
     hovered_index: Option<usize>,
 ) {
+    draw_character_grid(
+        frame,
+        area,
+        selected_char,
+        hovered_index,
+        CHARACTER_PALETTE.len(),
+        CHAR_SLOT_WIDTH,
+        |index| CHARACTER_PALETTE[index],
+    );
+}
+
+fn draw_character_grid(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    selected_char: char,
+    hovered_index: Option<usize>,
+    char_count: usize,
+    slot_width: u16,
+    mut char_at: impl FnMut(usize) -> char,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let columns = palette_columns(area.width, CHAR_SLOT_WIDTH);
+    let columns = palette_columns(area.width, slot_width);
 
-    for (index, ch) in CHARACTER_PALETTE.iter().enumerate() {
-        let Some((x, y)) = palette_position(area, columns, CHAR_SLOT_WIDTH, index) else {
+    for index in 0..char_count {
+        let Some((x, y)) = palette_position(area, columns, slot_width, index) else {
             break;
         };
+        let ch = char_at(index);
 
-        let selected = *ch == selected_char;
+        let selected = ch == selected_char;
         let hovered = hovered_index == Some(index);
         let style = choice_style(selected, hovered);
 
@@ -4399,14 +4570,17 @@ fn draw_character_palette(
 
         if x + 1 < area.x + area.width {
             frame.buffer_mut()[(x + 1, y)]
-                .set_symbol(&palette_char_symbol(*ch))
+                .set_symbol(&palette_char_symbol(ch))
                 .set_style(style);
         }
 
-        if x + 2 < area.x + area.width {
-            frame.buffer_mut()[(x + 2, y)]
-                .set_symbol(" ")
-                .set_style(style);
+        for offset in 2..slot_width {
+            let cell_x = x.saturating_add(offset);
+            if cell_x < area.x + area.width {
+                frame.buffer_mut()[(cell_x, y)]
+                    .set_symbol(" ")
+                    .set_style(style);
+            }
         }
     }
 }
@@ -5008,6 +5182,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
     app.modal_tool_areas.clear();
     app.modal_action_areas.clear();
     app.modal_color_areas.clear();
+    app.modal_symbol_areas.clear();
     app.modal_rgb_areas.clear();
     app.modal_file_areas.clear();
 
@@ -5018,6 +5193,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
 
     if matches!(modal, Modal::ColorPicker) {
         draw_color_picker(frame, app);
+        return;
+    }
+
+    if matches!(modal, Modal::SymbolPicker) {
+        draw_symbol_picker(frame, app);
         return;
     }
 
@@ -5067,6 +5247,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut AppState) {
         Modal::ExportText { input } => ("Export Text", format!("Path: {input}")),
         Modal::ExportAnsi { input } => ("Export ANSI", format!("Path: {input}")),
         Modal::ColorPicker => unreachable!("color picker is drawn separately"),
+        Modal::SymbolPicker => unreachable!("symbol picker is drawn separately"),
         Modal::RgbInput { .. } => unreachable!("RGB picker is drawn separately"),
         Modal::ExportMenu => ("Export", "Choose an export format".to_string()),
         Modal::ToolMenu => unreachable!("tool menu is drawn separately"),
@@ -5487,6 +5668,78 @@ fn draw_color_picker(frame: &mut Frame<'_>, app: &mut AppState) {
     );
 }
 
+fn draw_symbol_picker(frame: &mut Frame<'_>, app: &mut AppState) {
+    let area = centered_rect(76, 24, frame.area());
+    app.modal_area = area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default().title("More Symbols").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_text(
+        frame,
+        inner.x,
+        inner.y,
+        inner.width,
+        "Click a symbol. Wheel/PageUp/PageDown scroll.",
+        TuiStyle::default().fg(TuiColor::Rgb(170, 184, 194)),
+    );
+
+    let grid_area = app.symbol_picker_grid_area();
+    let columns = app.symbol_picker_columns().max(1);
+    let visible_rows = grid_area.height;
+    let start_index = app.symbol_picker_scroll_row * usize::from(columns);
+    let visible_count = usize::from(columns) * usize::from(visible_rows);
+    let visible_count = visible_count.min(MORE_CHARACTER_PALETTE.len().saturating_sub(start_index));
+    let hovered_visible_index = app
+        .hovered_modal_symbol
+        .and_then(|index| index.checked_sub(start_index))
+        .filter(|index| *index < visible_count);
+
+    draw_character_grid(
+        frame,
+        grid_area,
+        app.brush_char,
+        hovered_visible_index,
+        visible_count,
+        SYMBOL_SLOT_WIDTH,
+        |offset| MORE_CHARACTER_PALETTE[start_index + offset],
+    );
+
+    for offset in 0..visible_count {
+        let Some((x, y)) = palette_position(grid_area, columns, SYMBOL_SLOT_WIDTH, offset) else {
+            break;
+        };
+        app.modal_symbol_areas.push(ButtonHit {
+            action: start_index + offset,
+            area: Rect {
+                x,
+                y,
+                width: SYMBOL_SLOT_WIDTH.min(grid_area.x + grid_area.width - x),
+                height: 1,
+            },
+        });
+    }
+
+    let total_rows = MORE_CHARACTER_PALETTE.len().div_ceil(usize::from(columns));
+    let scroll = format!(
+        "Rows {}/{}",
+        app.symbol_picker_scroll_row + 1,
+        total_rows.max(1)
+    );
+    draw_text(
+        frame,
+        inner.x,
+        inner.y + inner.height.saturating_sub(2),
+        inner.width,
+        &scroll,
+        TuiStyle::default().fg(TuiColor::Rgb(211, 220, 228)),
+    );
+
+    draw_modal_buttons(frame, app, area, &[ModalAction::Cancel]);
+}
+
 fn draw_file_browser(frame: &mut Frame<'_>, app: &mut AppState, browser: FileBrowser) {
     let area = centered_rect(86, 24, frame.area());
     app.modal_area = area;
@@ -5887,6 +6140,7 @@ fn modal_input_mut(modal: &mut Option<Modal>) -> Option<&mut String> {
         | Modal::FileBrowser(_)
         | Modal::RgbInput { .. }
         | Modal::ColorPicker
+        | Modal::SymbolPicker
         | Modal::ExportMenu
         | Modal::ToolMenu
         | Modal::QuitConfirm => None,
@@ -6154,6 +6408,45 @@ mod tests {
         for ch in CHARACTER_PALETTE {
             assert!(is_valid_v1_character(*ch), "{ch:?} should be V1-valid");
         }
+        for ch in MORE_CHARACTER_PALETTE {
+            assert!(is_valid_v1_character(*ch), "{ch:?} should be V1-valid");
+        }
+    }
+
+    #[test]
+    fn character_palettes_include_diagonal_triangles() {
+        for ch in ['◢', '◣', '◤', '◥'] {
+            assert!(
+                CHARACTER_PALETTE.contains(&ch),
+                "{ch:?} should be visible by default"
+            );
+            assert!(
+                MORE_CHARACTER_PALETTE.contains(&ch),
+                "{ch:?} should be in the expanded picker"
+            );
+        }
+        let unique_symbols = MORE_CHARACTER_PALETTE
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(unique_symbols.len(), MORE_CHARACTER_PALETTE.len());
+        assert!(MORE_CHARACTER_PALETTE.len() > CHARACTER_PALETTE.len() * 2);
+    }
+
+    #[test]
+    fn symbol_picker_scrolls_over_expanded_palette() {
+        let mut app = AppState::editor(Project::new_image("symbols", 4, 2), None, false, "");
+        app.modal = Some(Modal::SymbolPicker);
+        app.modal_area = Rect {
+            x: 0,
+            y: 0,
+            width: 76,
+            height: 24,
+        };
+
+        app.scroll_symbol_picker(10);
+
+        assert!(app.symbol_picker_scroll_row > 0);
     }
 
     #[test]

@@ -239,6 +239,8 @@ The editor should ship with practical default character groups:
 - Weather and sparkle symbols when supported by the terminal font.
 - Recent characters.
 - User favorites.
+- A larger mouse-friendly symbol picker for blocks, triangles, box drawing,
+  arrows, bullets, and other V1-valid single-cell symbols.
 
 Version 1 should reject or warn on characters that occupy more than one terminal
 cell. Wide graphemes make coordinates ambiguous and should be deferred until a
